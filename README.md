@@ -1,0 +1,2 @@
+# Obce-
+Generátor databází obcí
