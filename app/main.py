@@ -5,6 +5,7 @@ from io import BytesIO
 from geopy.geocoders import Nominatim
 from distance import vzdalenost
 from auth import login, logout
+from pathlib import Path
 
 st.set_page_config(page_title="Města a obce ČR", page_icon="🏛️", layout="wide")
 # Přihlášení
@@ -14,17 +15,21 @@ if "logged" not in st.session_state:
 if not st.session_state.logged:
     login()
     st.stop()
-conn = duckdb.connect("data/obce.duckdb")
+BASE_DIR = Path(__file__).resolve().parent.parent
+conn = duckdb.connect(str(BASE_DIR / "data" / "obce.duckdb"))
 geolocator = Nominatim(user_agent="obce_app")
 
 st.markdown("""
 <style>
-.main h1 {color:#0F4C81;}
-div[data-testid='stMetric']{
- border:1px solid #e8e8e8;
- border-radius:12px;
- padding:12px;
- background:#fafafa;
+.main h1 {
+    color:#0F4C81;
+}
+
+div[data-testid="stMetric"]{
+    border:1px solid #e8e8e8;
+    border-radius:12px;
+    padding:12px;
+    background:#fafafa;
 }
 </style>
 """, unsafe_allow_html=True)

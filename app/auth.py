@@ -1,8 +1,10 @@
 import streamlit as st
 import duckdb
 import bcrypt
+from pathlib import Path
 
-DB = "data/obce.duckdb"
+BASE_DIR = Path(__file__).resolve().parent.parent
+DB = str(BASE_DIR / "data" / "obce.duckdb")
 
 
 def login():
@@ -50,5 +52,4 @@ def login():
 def logout():
 
     st.session_state.clear()
-
     st.rerun()
