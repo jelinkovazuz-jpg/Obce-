@@ -1,0 +1,8 @@
+streamlit
+pandas
+openpyxl
+geopy
+requests
+duckdb
+rapidfuzz
+bcrypt
