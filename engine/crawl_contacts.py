@@ -146,4 +146,4 @@ for kod, obec, web in obce:
 
 DB.close()
 
-print("\n🎉 Hotovo.")
+print("\n🎉 Hotovo.") 
