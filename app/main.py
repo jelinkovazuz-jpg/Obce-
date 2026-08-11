@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 
 import pandas as pd
 import streamlit as st
@@ -182,6 +183,7 @@ def quick_municipality_card(kod_obce):
                 next_contact if has_next else None, note,
             )
             st.toast("Karta obce byla uložena.", icon="✅")
+            st.session_state.quick_card_dismissed = (kod_obce, time.time())
             st.session_state.pop("quick_detail_code", None)
             st.session_state.pop("municipality_name_click", None)
             card_conn.close()
@@ -219,6 +221,7 @@ def quick_municipality_card(kod_obce):
         f"Stav odpovědi: {response_label}"
     )
     if st.button("Zavřít kartu", key=f"close_quick_{kod_obce}"):
+        st.session_state.quick_card_dismissed = (kod_obce, time.time())
         st.session_state.pop("quick_detail_code", None)
         st.session_state.pop("municipality_name_click", None)
         card_conn.close()
@@ -351,7 +354,20 @@ with tab_search:
         def open_quick_card():
             click = st.session_state.get("municipality_name_click")
             if click is not None:
-                st.session_state.quick_detail_code = int(df.iloc[click["row"]]["Kód"])
+                clicked_code = int(df.iloc[click["row"]]["Kód"])
+                dismissed = st.session_state.get("quick_card_dismissed")
+                if (
+                    dismissed
+                    and dismissed[0] == clicked_code
+                    and time.time() - dismissed[1] < 3
+                ):
+                    # Streamlit can replay the button event during the full
+                    # rerun that closes a dialog. Consume that replay once.
+                    st.session_state.pop("quick_card_dismissed", None)
+                    st.session_state.pop("municipality_name_click", None)
+                    return
+                st.session_state.pop("quick_card_dismissed", None)
+                st.session_state.quick_detail_code = clicked_code
 
         edited_df = st.data_editor(
             df, hide_index=True, width="stretch", key="search_results_editor",
