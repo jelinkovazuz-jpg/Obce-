@@ -16,6 +16,15 @@ class EmailSyncError(RuntimeError):
     pass
 
 
+def login_imap(connection, address, password):
+    """Log in while supporting UTF-8 passwords on Python 3.14+ IMAP."""
+    try:
+        return connection.login(address, password)
+    except UnicodeEncodeError:
+        credentials = f"\0{address}\0{password}".encode("utf-8")
+        return connection.authenticate("PLAIN", lambda _challenge: credentials)
+
+
 class _HTMLTextExtractor(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -193,7 +202,7 @@ def sync_mailbox(conn, address, password, username, limit=2000):
     mailbox = None
     try:
         mailbox = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
-        mailbox.login(address, password)
+        login_imap(mailbox, address, password)
         sent_box = _sent_mailbox(mailbox)
         email_map = {}
         for municipality_email, code in conn.execute("""

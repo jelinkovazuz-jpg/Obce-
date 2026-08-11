@@ -1,3 +1,4 @@
+import base64
 import imaplib
 import re
 import smtplib
@@ -6,7 +7,13 @@ from email.message import EmailMessage
 from email.utils import make_msgid
 from uuid import uuid4
 
-from app.email_sync import EmailSyncError, IMAP_HOST, IMAP_PORT, _sent_mailbox
+from app.email_sync import (
+    EmailSyncError,
+    IMAP_HOST,
+    IMAP_PORT,
+    _sent_mailbox,
+    login_imap,
+)
 
 
 SMTP_HOST = "smtp.seznam.cz"
@@ -17,6 +24,19 @@ EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 class EmailSendError(RuntimeError):
     pass
+
+
+def login_smtp(connection, address, password):
+    """Log in while supporting UTF-8 passwords on Python 3.14+ SMTP."""
+    try:
+        return connection.login(address, password)
+    except UnicodeEncodeError:
+        credentials = f"\0{address}\0{password}".encode("utf-8")
+        encoded = base64.b64encode(credentials).decode("ascii")
+        code, response = connection.docmd("AUTH", "PLAIN " + encoded)
+        if code != 235:
+            raise smtplib.SMTPAuthenticationError(code, response)
+        return code, response
 
 
 def init_email_sender(conn):
@@ -106,11 +126,11 @@ def send_individual_messages(conn, sender, password, recipients, subject_templat
     imap = None
     try:
         smtp = smtp_factory(SMTP_HOST, SMTP_PORT, timeout=20)
-        smtp.login(sender, password)
+        login_smtp(smtp, sender, password)
         # Verify access to Sent before sending the first message. This avoids
         # starting a batch whose copies cannot be saved in the mailbox.
         imap = imap_factory(IMAP_HOST, IMAP_PORT)
-        imap.login(sender, password)
+        login_imap(imap, sender, password)
         sent_mailbox = _sent_mailbox(imap)
         for index, recipient in enumerate(recipients):
             address = recipient["email"].strip().lower()
