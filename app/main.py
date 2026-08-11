@@ -43,6 +43,20 @@ from app.email_sender import (
 load_dotenv()
 st.set_page_config(page_title="CRM obcí ČR", page_icon="🏛️", layout="wide")
 
+RESPONSE_DEADLINE_DAYS = 7
+RESPONSE_STATES = ["Neosloveno", "Čekáme", "Bez odpovědi", "Odpověděli"]
+
+
+def response_status(last_sent, last_received, now=None):
+    if last_sent is None:
+        return "Neosloveno", 0
+    if last_received is not None and last_received > last_sent:
+        return "Odpověděli", 0
+    now = now or pd.Timestamp.now().to_pydatetime()
+    waiting_days = max((now - last_sent).days, 0)
+    state = "Bez odpovědi" if waiting_days >= RESPONSE_DEADLINE_DAYS else "Čekáme"
+    return state, waiting_days
+
 if "logged" not in st.session_state:
     st.session_state.logged = False
 if not st.session_state.logged:
@@ -139,7 +153,25 @@ def quick_municipality_card(kod_obce):
             st.write(f"{icon} **{subject}** · {when}")
     else:
         st.caption("Zatím bez synchronizované komunikace.")
-    st.caption(f"Poslední oslovení: {obec[12].strftime('%d.%m.%Y') if obec[12] else '—'}")
+    response_info = card_conn.execute("""
+        SELECT
+            max(sent_at) FILTER (WHERE direction='Odesláno'),
+            max(sent_at) FILTER (
+                WHERE direction='Přijato'
+                  AND lower(coalesce(sender,'')) NOT LIKE '%mailer-daemon%'
+                  AND lower(coalesce(sender,'')) NOT LIKE '%no-reply%'
+                  AND lower(coalesce(sender,'')) NOT LIKE '%noreply%'
+                  AND lower(coalesce(subject,'')) NOT LIKE '%automatická odpověď%'
+                  AND lower(coalesce(subject,'')) NOT LIKE '%automatic reply%'
+            )
+        FROM crm_emails WHERE kod_obce=?
+    """, [kod_obce]).fetchone()
+    last_sent, last_received = response_info
+    response_label, _ = response_status(last_sent, last_received)
+    st.caption(
+        f"Poslední oslovení: {last_sent.strftime('%d.%m.%Y') if last_sent else '—'} · "
+        f"Stav odpovědi: {response_label}"
+    )
     if st.button("Zavřít kartu", key=f"close_quick_{kod_obce}"):
         st.session_state.pop("quick_detail_code", None)
         card_conn.close()
@@ -208,10 +240,24 @@ with tab_search:
                    coalesce(c.status, 'Nová') AS status, c.contacted_on,
                    CASE WHEN u.username IS NOT NULL
                         THEN u.display_name || ' (' || u.username || ')'
-                        ELSE coalesce(c.owner_username, '—') END AS owner
+                        ELSE coalesce(c.owner_username, '—') END AS owner,
+                   em.last_sent, em.last_received
             FROM obce o
             LEFT JOIN crm_records c USING (kod_obce)
             LEFT JOIN users u ON u.username = c.owner_username
+            LEFT JOIN (
+                SELECT kod_obce,
+                       max(sent_at) FILTER (WHERE direction='Odesláno') AS last_sent,
+                       max(sent_at) FILTER (
+                           WHERE direction='Přijato'
+                             AND lower(coalesce(sender,'')) NOT LIKE '%mailer-daemon%'
+                             AND lower(coalesce(sender,'')) NOT LIKE '%no-reply%'
+                             AND lower(coalesce(sender,'')) NOT LIKE '%noreply%'
+                             AND lower(coalesce(subject,'')) NOT LIKE '%automatická odpověď%'
+                             AND lower(coalesce(subject,'')) NOT LIKE '%automatic reply%'
+                       ) AS last_received
+                FROM crm_emails GROUP BY kod_obce
+            ) em USING (kod_obce)
             WHERE o.latitude IS NOT NULL AND o.longitude IS NOT NULL
             """
         ).fetchall()
@@ -220,19 +266,28 @@ with tab_search:
         for row in rows:
             km = vzdalenost(latitude, longitude, row[4], row[5])
             if km <= active_radius:
+                last_sent, last_received = row[13], row[14]
+                response_state, waiting_days = response_status(last_sent, last_received)
                 results.append(
                     {
                         "Vybrat": False, "Kód": row[0], "Obec": row[1], "Okres": row[2] or "",
                         "Kraj": row[3] or "", "Vzdálenost (km)": round(km, 2),
                         "Stav CRM": row[10], "Osloveno": row[11], "Obchodník": row[12],
+                        "Odpověď": response_state, "Čekáme dní": waiting_days,
+                        "Poslední odpověď": last_received,
                         "Web": row[6] or "", "E-mail": row[7] or "",
                         "Telefon": row[8] or "", "IČO": row[9] or "",
                     }
                 )
 
-        columns = ["Vybrat", "Kód", "Obec", "Okres", "Kraj", "Vzdálenost (km)", "Stav CRM", "Osloveno",
+        columns = ["Vybrat", "Kód", "Obec", "Okres", "Kraj", "Vzdálenost (km)",
+                   "Stav CRM", "Osloveno", "Odpověď", "Čekáme dní", "Poslední odpověď",
                    "Obchodník", "Web", "E-mail", "Telefon", "IČO"]
         df = pd.DataFrame(results, columns=columns).sort_values("Vzdálenost (km)")
+        response_filter = st.multiselect(
+            "Filtrovat podle odpovědi", RESPONSE_STATES, default=RESPONSE_STATES
+        )
+        df = df[df["Odpověď"].isin(response_filter)]
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("🏘️ Obcí", len(df))
         c2.metric("🌐 Webů", int(df["Web"].ne("").sum()))
@@ -253,7 +308,7 @@ with tab_search:
 
         edited_df = st.data_editor(
             df, hide_index=True, width="stretch", key="search_results_editor",
-            disabled=["Kód", "Vzdálenost (km)"],
+            disabled=["Kód", "Vzdálenost (km)", "Odpověď", "Čekáme dní", "Poslední odpověď"],
             column_config={
                 "Web": st.column_config.LinkColumn("Web"),
                 "Obec": st.column_config.ButtonColumn(
@@ -269,6 +324,11 @@ with tab_search:
                 ),
                 "Osloveno": st.column_config.DateColumn(
                     "Osloveno", help="Datum, kdy jste obci poslali e-mail", format="DD.MM.YYYY"
+                ),
+                "Odpověď": st.column_config.TextColumn("Odpověď", pinned=True),
+                "Čekáme dní": st.column_config.NumberColumn("Čekáme dní", format="%d"),
+                "Poslední odpověď": st.column_config.DatetimeColumn(
+                    "Poslední odpověď", format="DD.MM.YYYY HH:mm"
                 ),
                 "Obchodník": st.column_config.SelectboxColumn(
                     "Obchodník", options=list(inline_user_labels), required=True

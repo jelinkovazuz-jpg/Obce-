@@ -12,6 +12,7 @@ obchodních vztahů s obcemi.
 - úkoly, termíny a upozornění na úkoly po termínu,
 - individuální rozesílání nabídek vybraným obcím přes SMTP,
 - ukládání kopií odeslaných nabídek do složky Odeslané přes IMAP,
+- automatická evidence odpovědí a filtr obcí bez odpovědi po 7 dnech,
 - přihlášení uživatelů a role.
 
 ## Spuštění
