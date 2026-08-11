@@ -10,6 +10,7 @@ obchodních vztahů s obcemi.
 - přiřazení obce obchodníkovi,
 - historie telefonátů, e-mailů, schůzek a poznámek,
 - úkoly, termíny a upozornění na úkoly po termínu,
+- individuální rozesílání nabídek vybraným obcím přes SMTP,
 - přihlášení uživatelů a role.
 
 ## Spuštění
@@ -27,5 +28,6 @@ Existující katalog obcí se nemění.
 ## Synchronizace Seznam Email
 
 Zkopírujte hodnoty z `.env.example` do lokálního souboru `.env` a doplňte heslo
-pro poštovní aplikaci. Aplikace používá pouze zabezpečené IMAP spojení a ze
-složky Odeslané čte hlavičky zpráv, nikoliv jejich obsah nebo přílohy.
+pro poštovní aplikaci. Aplikace používá zabezpečené IMAP spojení, synchronizuje
+přijatou i odeslanou komunikaci a páruje ji s obcemi podle e-mailové adresy.
+Ukládá text zpráv a názvy příloh, nikoliv samotné soubory příloh.

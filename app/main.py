@@ -1,4 +1,5 @@
 from io import BytesIO
+import json
 import os
 
 import pandas as pd
@@ -22,7 +23,13 @@ from crm import (
     update_municipality,
 )
 from distance import vzdalenost
-from email_sync import EmailSyncError, init_email_sync, sync_sent_mail
+from email_sync import EmailSyncError, init_email_sync, sync_mailbox
+from email_sender import (
+    MAX_BATCH_SIZE,
+    EmailSendError,
+    init_email_sender,
+    send_individual_messages,
+)
 
 
 load_dotenv()
@@ -37,6 +44,7 @@ if not st.session_state.logged:
 conn = connect()
 init_crm(conn)
 init_email_sync(conn)
+init_email_sender(conn)
 
 st.markdown(
     """
@@ -127,7 +135,7 @@ with tab_search:
             if km <= active_radius:
                 results.append(
                     {
-                        "Kód": row[0], "Obec": row[1], "Okres": row[2] or "",
+                        "Vybrat": False, "Kód": row[0], "Obec": row[1], "Okres": row[2] or "",
                         "Kraj": row[3] or "", "Vzdálenost (km)": round(km, 2),
                         "Stav CRM": row[10], "Osloveno": row[11], "Obchodník": row[12],
                         "Web": row[6] or "", "E-mail": row[7] or "",
@@ -135,7 +143,7 @@ with tab_search:
                     }
                 )
 
-        columns = ["Kód", "Obec", "Okres", "Kraj", "Vzdálenost (km)", "Stav CRM", "Osloveno",
+        columns = ["Vybrat", "Kód", "Obec", "Okres", "Kraj", "Vzdálenost (km)", "Stav CRM", "Osloveno",
                    "Obchodník", "Web", "E-mail", "Telefon", "IČO"]
         df = pd.DataFrame(results, columns=columns).sort_values("Vzdálenost (km)")
         c1, c2, c3, c4 = st.columns(4)
@@ -156,6 +164,9 @@ with tab_search:
             disabled=["Kód", "Vzdálenost (km)"],
             column_config={
                 "Web": st.column_config.LinkColumn("Web"),
+                "Vybrat": st.column_config.CheckboxColumn(
+                    "Vybrat", help="Zařadit obec do rozesílky"
+                ),
                 "Stav CRM": st.column_config.SelectboxColumn(
                     "Stav CRM", options=STATUSES, required=True
                 ),
@@ -205,6 +216,73 @@ with tab_search:
             "📥 Exportovat výsledky do Excelu", buffer.getvalue(), "obce_crm.xlsx",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
+
+        selected = edited_df[edited_df["Vybrat"] & edited_df["E-mail"].ne("")]
+        st.markdown("### ✉️ Odeslat nabídku vybraným obcím")
+        st.caption(
+            f"Vybráno {len(selected)} obcí s e-mailem. Každá zpráva bude odeslána "
+            f"samostatně; maximum je {MAX_BATCH_SIZE} zpráv v jedné dávce."
+        )
+        skip_contacted = st.checkbox("Přeskočit již oslovené obce", value=True)
+        if skip_contacted:
+            selected = selected[selected["Osloveno"].isna()]
+            st.caption(f"Po odebrání již oslovených zbývá {len(selected)} příjemců.")
+
+        with st.form("bulk_email_form"):
+            subject_template = st.text_input(
+                "Předmět", placeholder="Nabídka pro obec {{obec}}"
+            )
+            body_template = st.text_area(
+                "Text zprávy",
+                placeholder="Dobrý den,\n\nobracím se na obec {{obec}}…",
+                height=220,
+                help="Lze použít {{obec}}, {{okres}}, {{kraj}} a {{email}}.",
+            )
+            sender_address = st.text_input(
+                "Odesílatel", value=os.getenv("SEZNAM_EMAIL_ADDRESS", "program.obce@email.cz")
+            )
+            sender_password = st.text_input(
+                "Heslo k e-mailu", value=os.getenv("SEZNAM_EMAIL_PASSWORD", ""), type="password"
+            )
+            confirm_send = st.checkbox(
+                "Potvrzuji odeslání samostatné zprávy každému vybranému příjemci"
+            )
+            send_clicked = st.form_submit_button(
+                f"📨 Odeslat {len(selected)} samostatných e-mailů", type="primary"
+            )
+
+        if send_clicked:
+            if not confirm_send:
+                st.error("Před odesláním potvrďte rozesílku.")
+            elif not sender_password:
+                st.error("Zadejte heslo k e-mailu nebo ho nastavte v .env.")
+            elif len(selected) > MAX_BATCH_SIZE:
+                st.error(f"Vyberte nejvýše {MAX_BATCH_SIZE} obcí.")
+            else:
+                recipient_rows = [
+                    {
+                        "code": int(row["Kód"]), "name": str(row["Obec"]),
+                        "district": str(row["Okres"]), "region": str(row["Kraj"]),
+                        "email": str(row["E-mail"]),
+                    }
+                    for _, row in selected.iterrows()
+                ]
+                with st.spinner("Odesílám každé obci samostatnou zprávu…"):
+                    try:
+                        send_result = send_individual_messages(
+                            conn, sender_address.strip(), sender_password, recipient_rows,
+                            subject_template, body_template, st.session_state.username,
+                        )
+                    except EmailSendError as exc:
+                        st.error(str(exc))
+                    else:
+                        st.success(
+                            f"Odesláno: {send_result['sent']}, chyby: {send_result['failed']}."
+                        )
+                        st.dataframe(
+                            pd.DataFrame(send_result["details"], columns=["Obec", "E-mail", "Výsledek"]),
+                            hide_index=True, width="stretch",
+                        )
 
 
 with tab_pipeline:
@@ -343,6 +421,24 @@ with tab_detail:
     else:
         st.dataframe(activities, hide_index=True, width="stretch")
 
+    st.markdown("#### E-mailová komunikace")
+    messages = conn.execute("""
+        SELECT direction,sender,recipients,subject,body_text,attachments,sent_at
+        FROM crm_emails WHERE kod_obce=? ORDER BY sent_at DESC
+    """, [kod_obce]).fetchall()
+    if not messages:
+        st.caption("Zatím nebyla synchronizována žádná komunikace s touto obcí.")
+    else:
+        for direction, sender, recipients, subject, body, attachments, sent_at in messages:
+            icon = "📤" if direction == "Odesláno" else "📥"
+            timestamp = sent_at.strftime("%d.%m.%Y %H:%M") if sent_at else "bez data"
+            with st.expander(f"{icon} {timestamp} · {subject}"):
+                st.caption(f"Od: {sender or '—'}  |  Komu: {recipients or '—'}")
+                st.text(body) if body else st.caption("Zpráva nemá textový obsah.")
+                attachment_names = json.loads(attachments or "[]")
+                if attachment_names:
+                    st.caption("Přílohy: " + ", ".join(attachment_names))
+
 
 with tab_tasks:
     mine_only = st.checkbox("Pouze moje úkoly", value=True)
@@ -380,16 +476,16 @@ with tab_tasks:
 
 
 with tab_email:
-    st.subheader("Synchronizace odeslaných e-mailů")
+    st.subheader("Synchronizace e-mailové komunikace")
     st.caption(
-        "CRM přečte pouze hlavičky zpráv ve složce Odeslané a porovná adresáty "
-        "s e-maily obcí. Obsah zpráv ani přílohy nestahuje."
+        "CRM načte přijaté i odeslané zprávy a porovná jejich adresy s e-maily obcí. "
+        "Ukládá text komunikace a názvy příloh; samotné soubory příloh nestahuje."
     )
     configured_address = os.getenv("SEZNAM_EMAIL_ADDRESS", "program.obce@email.cz")
     configured_password = os.getenv("SEZNAM_EMAIL_PASSWORD", "")
     if configured_password and not st.session_state.get("email_auto_synced"):
         try:
-            auto_stats = sync_sent_mail(
+            auto_stats = sync_mailbox(
                 conn, configured_address, configured_password, st.session_state.username
             )
         except EmailSyncError as exc:
@@ -398,7 +494,7 @@ with tab_email:
             st.session_state.email_auto_synced = True
             if auto_stats["new"]:
                 st.toast(
-                    f"E-mail automaticky synchronizován: {auto_stats['new']} nových oslovení.",
+                    f"E-mail synchronizován: {auto_stats['new']} nových zpráv.",
                     icon="📧",
                 )
 
@@ -409,13 +505,13 @@ with tab_email:
         type="password",
         help="Při dvoufázovém ověření použijte samostatné heslo pro poštovní program.",
     )
-    if st.button("🔄 Synchronizovat odeslané e-maily", type="primary"):
+    if st.button("🔄 Synchronizovat e-mailovou komunikaci", type="primary"):
         if not email_password:
             st.error("Zadejte heslo nebo ho nastavte v souboru .env.")
         else:
-            with st.spinner("Načítám odeslané zprávy ze Seznamu…"):
+            with st.spinner("Načítám přijaté a odeslané zprávy ze Seznamu…"):
                 try:
-                    sync_stats = sync_sent_mail(
+                    sync_stats = sync_mailbox(
                         conn, email_address.strip(), email_password,
                         st.session_state.username,
                     )
@@ -425,7 +521,8 @@ with tab_email:
                     st.success(
                         f"Hotovo: zkontrolováno {sync_stats['checked']} zpráv, "
                         f"nalezeno {sync_stats['matched']} shod a přidáno "
-                        f"{sync_stats['new']} nových oslovení."
+                        f"{sync_stats['new']} zpráv "
+                        f"({sync_stats['sent']} odeslaných, {sync_stats['received']} přijatých)."
                     )
 
     st.markdown("#### Automatická synchronizace")
