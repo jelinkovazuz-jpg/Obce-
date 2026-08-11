@@ -1,9 +1,12 @@
+import imaplib
 import re
 import smtplib
 import time
 from email.message import EmailMessage
 from email.utils import make_msgid
 from uuid import uuid4
+
+from app.email_sync import EmailSyncError, IMAP_HOST, IMAP_PORT, _sent_mailbox
 
 
 SMTP_HOST = "smtp.seznam.cz"
@@ -87,7 +90,8 @@ def _record_failure(conn, batch_id, recipient, subject, body, username, error):
 
 def send_individual_messages(conn, sender, password, recipients, subject_template,
                              body_template, username, delay_seconds=1,
-                             smtp_factory=smtplib.SMTP_SSL):
+                             smtp_factory=smtplib.SMTP_SSL,
+                             imap_factory=imaplib.IMAP4_SSL):
     init_email_sender(conn)
     if not recipients:
         raise EmailSendError("Není vybrán žádný příjemce.")
@@ -99,9 +103,15 @@ def send_individual_messages(conn, sender, password, recipients, subject_templat
     batch_id = str(uuid4())
     results = {"batch_id": batch_id, "sent": 0, "failed": 0, "details": []}
     smtp = None
+    imap = None
     try:
         smtp = smtp_factory(SMTP_HOST, SMTP_PORT, timeout=20)
         smtp.login(sender, password)
+        # Verify access to Sent before sending the first message. This avoids
+        # starting a batch whose copies cannot be saved in the mailbox.
+        imap = imap_factory(IMAP_HOST, IMAP_PORT)
+        imap.login(sender, password)
+        sent_mailbox = _sent_mailbox(imap)
         for index, recipient in enumerate(recipients):
             address = recipient["email"].strip().lower()
             subject = _personalize(subject_template.strip(), recipient)
@@ -129,11 +139,36 @@ def send_individual_messages(conn, sender, password, recipients, subject_templat
                 _record_success(conn, batch_id, recipient, subject, body, username,
                                 message["Message-ID"])
                 results["sent"] += 1
-                results["details"].append((recipient["name"], address, "Odesláno"))
+                try:
+                    append_status, _ = imap.append(
+                        sent_mailbox,
+                        r"(\Seen)",
+                        imaplib.Time2Internaldate(time.time()),
+                        message.as_bytes(),
+                    )
+                except (imaplib.IMAP4.error, OSError) as exc:
+                    append_status = "NO"
+                    append_error = str(exc)
+                else:
+                    append_error = ""
+                if append_status == "OK":
+                    result_text = "Odesláno a uloženo v Odeslaných"
+                else:
+                    result_text = "Odesláno, ale kopii se nepodařilo uložit"
+                    conn.execute("""
+                        UPDATE crm_send_log SET error=?
+                        WHERE batch_id=? AND kod_obce=? AND recipient=?
+                    """, [append_error or "IMAP APPEND odmítnut", batch_id,
+                            recipient["code"], address])
+                results["details"].append((recipient["name"], address, result_text))
             if index < len(recipients) - 1 and delay_seconds:
                 time.sleep(delay_seconds)
     except smtplib.SMTPAuthenticationError as exc:
         raise EmailSendError("Přihlášení k SMTP se nezdařilo. Zkontrolujte heslo.") from exc
+    except (imaplib.IMAP4.error, EmailSyncError) as exc:
+        raise EmailSendError(
+            "Nelze otevřít složku Odeslané. Rozesílání nebylo zahájeno."
+        ) from exc
     except (smtplib.SMTPException, OSError) as exc:
         raise EmailSendError("K odesílacímu serveru Seznamu se nepodařilo připojit.") from exc
     finally:
@@ -141,5 +176,10 @@ def send_individual_messages(conn, sender, password, recipients, subject_templat
             try:
                 smtp.quit()
             except (smtplib.SMTPException, OSError):
+                pass
+        if imap is not None:
+            try:
+                imap.logout()
+            except (imaplib.IMAP4.error, OSError):
                 pass
     return results

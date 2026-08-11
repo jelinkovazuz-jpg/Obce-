@@ -11,6 +11,7 @@ obchodních vztahů s obcemi.
 - historie telefonátů, e-mailů, schůzek a poznámek,
 - úkoly, termíny a upozornění na úkoly po termínu,
 - individuální rozesílání nabídek vybraným obcím přes SMTP,
+- ukládání kopií odeslaných nabídek do složky Odeslané přes IMAP,
 - přihlášení uživatelů a role.
 
 ## Spuštění
