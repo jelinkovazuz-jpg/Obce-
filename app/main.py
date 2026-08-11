@@ -67,6 +67,76 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+
+@st.dialog("Karta obce", width="large")
+def quick_municipality_card(kod_obce):
+    obec = conn.execute("""
+        SELECT o.nazev,o.okres,o.kraj,o.web,o.email,o.telefon,o.ico,
+               coalesce(c.status,'Nová'),coalesce(c.priority,'Střední'),
+               coalesce(c.owner_username,''),c.next_contact,coalesce(c.note,''),
+               c.contacted_on
+        FROM obce o LEFT JOIN crm_records c USING (kod_obce)
+        WHERE o.kod_obce=?
+    """, [kod_obce]).fetchone()
+    if not obec:
+        st.error("Obec už v databázi neexistuje.")
+        return
+
+    st.subheader(f"🏛️ {obec[0]}")
+    st.caption(f"{obec[1] or 'Bez okresu'} · {obec[2] or 'Bez kraje'} · kód {kod_obce}")
+    c1, c2, c3 = st.columns(3)
+    c1.markdown(f"**E-mail**  \n{obec[4] or '—'}")
+    c2.markdown(f"**Telefon**  \n{obec[5] or '—'}")
+    c3.markdown(f"**IČO**  \n{obec[6] or '—'}")
+    if obec[3]:
+        st.link_button("🌐 Otevřít web obce", obec[3])
+
+    users = conn.execute(
+        "SELECT username,display_name FROM users WHERE active ORDER BY display_name"
+    ).fetchall()
+    user_labels = {"— Nepřiřazeno —": ""} | {
+        f"{name} ({username})": username for username, name in users
+    }
+    owner_keys = list(user_labels)
+    current_owner = next(
+        (label for label, username in user_labels.items() if username == obec[9]),
+        owner_keys[0],
+    )
+    with st.form(f"quick_card_{kod_obce}"):
+        a, b, c = st.columns(3)
+        status = a.selectbox("Stav", STATUSES, index=STATUSES.index(obec[7]))
+        priority = b.selectbox("Priorita", PRIORITIES, index=PRIORITIES.index(obec[8]))
+        owner = c.selectbox("Obchodník", owner_keys, index=owner_keys.index(current_owner))
+        has_next = st.checkbox("Naplánovat další kontakt", value=obec[10] is not None)
+        next_contact = st.date_input(
+            "Další kontakt", value=obec[10] or "today", disabled=not has_next
+        )
+        note = st.text_area("Poznámka", value=obec[11], height=100)
+        if st.form_submit_button("💾 Uložit kartu", type="primary"):
+            save_record(
+                conn, kod_obce, status, priority, user_labels[owner],
+                next_contact if has_next else None, note,
+            )
+            st.toast("Karta obce byla uložena.", icon="✅")
+            st.rerun()
+
+    st.markdown("#### Poslední e-maily")
+    messages = conn.execute("""
+        SELECT direction,subject,sent_at FROM crm_emails
+        WHERE kod_obce=? ORDER BY sent_at DESC LIMIT 5
+    """, [kod_obce]).fetchall()
+    if messages:
+        for direction, subject, sent_at in messages:
+            icon = "📤" if direction == "Odesláno" else "📥"
+            when = sent_at.strftime("%d.%m.%Y %H:%M") if sent_at else "bez data"
+            st.write(f"{icon} **{subject}** · {when}")
+    else:
+        st.caption("Zatím bez synchronizované komunikace.")
+    st.caption(f"Poslední oslovení: {obec[12].strftime('%d.%m.%Y') if obec[12] else '—'}")
+    if st.button("Zavřít kartu", key=f"close_quick_{kod_obce}"):
+        st.session_state.pop("quick_detail_code", None)
+        st.rerun()
+
 with st.sidebar:
     st.success(f"👤 {st.session_state.display_name}")
     st.caption(f"Role: {st.session_state.role}")
@@ -167,11 +237,21 @@ with tab_search:
             f"{display_name} ({username})": username for username, display_name in active_users
         }
 
+        def open_quick_card():
+            click = st.session_state.get("municipality_name_click")
+            if click is not None:
+                st.session_state.quick_detail_code = int(df.iloc[click["row"]]["Kód"])
+
         edited_df = st.data_editor(
             df, hide_index=True, width="stretch", key="search_results_editor",
             disabled=["Kód", "Vzdálenost (km)"],
             column_config={
                 "Web": st.column_config.LinkColumn("Web"),
+                "Obec": st.column_config.ButtonColumn(
+                    "Obec", type="tertiary", pinned=True,
+                    help="Kliknutím otevřete kartu obce",
+                    on_click=open_quick_card, key="municipality_name_click",
+                ),
                 "Vybrat": st.column_config.CheckboxColumn(
                     "Vybrat", help="Zařadit obec do rozesílky"
                 ),
@@ -217,6 +297,8 @@ with tab_search:
         if changes:
             st.toast(f"Změny byly automaticky uloženy ({changes}×).", icon="✅")
             st.rerun()
+        if st.session_state.get("quick_detail_code") is not None:
+            quick_municipality_card(st.session_state.quick_detail_code)
         buffer = BytesIO()
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
             df.to_excel(writer, index=False)
