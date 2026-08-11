@@ -1,14 +1,22 @@
 from io import BytesIO
 import json
 import os
+from pathlib import Path
+import sys
 
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 from geopy.geocoders import Nominatim
 
-from auth import login, logout
-from crm import (
+# Streamlit Cloud may include packages whose names collide with local modules.
+# Import everything through the explicit application package.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from app.auth import login, logout
+from app.crm import (
     ACTIVITY_TYPES,
     PRIORITIES,
     STATUSES,
@@ -22,9 +30,9 @@ from crm import (
     update_inline_crm,
     update_municipality,
 )
-from distance import vzdalenost
-from email_sync import EmailSyncError, init_email_sync, sync_mailbox
-from email_sender import (
+from app.distance import vzdalenost
+from app.email_sync import EmailSyncError, init_email_sync, sync_mailbox
+from app.email_sender import (
     MAX_BATCH_SIZE,
     EmailSendError,
     init_email_sender,

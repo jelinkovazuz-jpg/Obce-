@@ -1,0 +1,1 @@
+"""CRM obcí application package."""
