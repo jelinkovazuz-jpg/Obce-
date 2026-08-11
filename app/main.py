@@ -70,7 +70,12 @@ st.markdown(
 
 @st.dialog("Karta obce", width="large")
 def quick_municipality_card(kod_obce):
-    obec = conn.execute("""
+    # A dialog reruns independently from the main page. It therefore needs
+    # its own connection instead of the main connection, which may be closed.
+    card_conn = connect()
+    init_crm(card_conn)
+    init_email_sync(card_conn)
+    obec = card_conn.execute("""
         SELECT o.nazev,o.okres,o.kraj,o.web,o.email,o.telefon,o.ico,
                coalesce(c.status,'Nová'),coalesce(c.priority,'Střední'),
                coalesce(c.owner_username,''),c.next_contact,coalesce(c.note,''),
@@ -80,6 +85,7 @@ def quick_municipality_card(kod_obce):
     """, [kod_obce]).fetchone()
     if not obec:
         st.error("Obec už v databázi neexistuje.")
+        card_conn.close()
         return
 
     st.subheader(f"🏛️ {obec[0]}")
@@ -91,7 +97,7 @@ def quick_municipality_card(kod_obce):
     if obec[3]:
         st.link_button("🌐 Otevřít web obce", obec[3])
 
-    users = conn.execute(
+    users = card_conn.execute(
         "SELECT username,display_name FROM users WHERE active ORDER BY display_name"
     ).fetchall()
     user_labels = {"— Nepřiřazeno —": ""} | {
@@ -114,14 +120,15 @@ def quick_municipality_card(kod_obce):
         note = st.text_area("Poznámka", value=obec[11], height=100)
         if st.form_submit_button("💾 Uložit kartu", type="primary"):
             save_record(
-                conn, kod_obce, status, priority, user_labels[owner],
+                card_conn, kod_obce, status, priority, user_labels[owner],
                 next_contact if has_next else None, note,
             )
             st.toast("Karta obce byla uložena.", icon="✅")
+            card_conn.close()
             st.rerun()
 
     st.markdown("#### Poslední e-maily")
-    messages = conn.execute("""
+    messages = card_conn.execute("""
         SELECT direction,subject,sent_at FROM crm_emails
         WHERE kod_obce=? ORDER BY sent_at DESC LIMIT 5
     """, [kod_obce]).fetchall()
@@ -135,7 +142,9 @@ def quick_municipality_card(kod_obce):
     st.caption(f"Poslední oslovení: {obec[12].strftime('%d.%m.%Y') if obec[12] else '—'}")
     if st.button("Zavřít kartu", key=f"close_quick_{kod_obce}"):
         st.session_state.pop("quick_detail_code", None)
+        card_conn.close()
         st.rerun()
+    card_conn.close()
 
 with st.sidebar:
     st.success(f"👤 {st.session_state.display_name}")
