@@ -182,8 +182,10 @@ def quick_municipality_card(kod_obce):
                 next_contact if has_next else None, note,
             )
             st.toast("Karta obce byla uložena.", icon="✅")
+            st.session_state.pop("quick_detail_code", None)
+            st.session_state.pop("municipality_name_click", None)
             card_conn.close()
-            st.rerun()
+            st.rerun(scope="app")
 
     st.markdown("#### Poslední e-maily")
     messages = card_conn.execute("""
@@ -218,8 +220,9 @@ def quick_municipality_card(kod_obce):
     )
     if st.button("Zavřít kartu", key=f"close_quick_{kod_obce}"):
         st.session_state.pop("quick_detail_code", None)
+        st.session_state.pop("municipality_name_click", None)
         card_conn.close()
-        st.rerun()
+        st.rerun(scope="app")
     card_conn.close()
 
 with st.sidebar:
