@@ -1,7 +1,9 @@
 from io import BytesIO
+import os
 
 import pandas as pd
 import streamlit as st
+from dotenv import load_dotenv
 from geopy.geocoders import Nominatim
 
 from auth import login, logout
@@ -20,8 +22,10 @@ from crm import (
     update_municipality,
 )
 from distance import vzdalenost
+from email_sync import EmailSyncError, init_email_sync, sync_sent_mail
 
 
+load_dotenv()
 st.set_page_config(page_title="CRM obcí ČR", page_icon="🏛️", layout="wide")
 
 if "logged" not in st.session_state:
@@ -32,6 +36,7 @@ if not st.session_state.logged:
 
 conn = connect()
 init_crm(conn)
+init_email_sync(conn)
 
 st.markdown(
     """
@@ -57,8 +62,8 @@ with st.sidebar:
 st.title("🏛️ CRM obcí ČR")
 st.caption("Vyhledávání obcí, obchodní pipeline, aktivity a úkoly")
 
-tab_search, tab_pipeline, tab_detail, tab_tasks = st.tabs(
-    ["🔎 Vyhledávání", "📊 Pipeline", "🏢 Detail obce", "✅ Úkoly"]
+tab_search, tab_pipeline, tab_detail, tab_tasks, tab_email = st.tabs(
+    ["🔎 Vyhledávání", "📊 Pipeline", "🏢 Detail obce", "✅ Úkoly", "📧 E-mail"]
 )
 
 
@@ -372,5 +377,66 @@ with tab_tasks:
                 set_task_completed(conn, task_id, not completed)
                 st.rerun()
             st.divider()
+
+
+with tab_email:
+    st.subheader("Synchronizace odeslaných e-mailů")
+    st.caption(
+        "CRM přečte pouze hlavičky zpráv ve složce Odeslané a porovná adresáty "
+        "s e-maily obcí. Obsah zpráv ani přílohy nestahuje."
+    )
+    configured_address = os.getenv("SEZNAM_EMAIL_ADDRESS", "program.obce@email.cz")
+    configured_password = os.getenv("SEZNAM_EMAIL_PASSWORD", "")
+    if configured_password and not st.session_state.get("email_auto_synced"):
+        try:
+            auto_stats = sync_sent_mail(
+                conn, configured_address, configured_password, st.session_state.username
+            )
+        except EmailSyncError as exc:
+            st.warning(f"Automatická synchronizace: {exc}")
+        else:
+            st.session_state.email_auto_synced = True
+            if auto_stats["new"]:
+                st.toast(
+                    f"E-mail automaticky synchronizován: {auto_stats['new']} nových oslovení.",
+                    icon="📧",
+                )
+
+    email_address = st.text_input("E-mailová adresa", value=configured_address)
+    email_password = st.text_input(
+        "Heslo pro poštovní aplikaci",
+        value=configured_password,
+        type="password",
+        help="Při dvoufázovém ověření použijte samostatné heslo pro poštovní program.",
+    )
+    if st.button("🔄 Synchronizovat odeslané e-maily", type="primary"):
+        if not email_password:
+            st.error("Zadejte heslo nebo ho nastavte v souboru .env.")
+        else:
+            with st.spinner("Načítám odeslané zprávy ze Seznamu…"):
+                try:
+                    sync_stats = sync_sent_mail(
+                        conn, email_address.strip(), email_password,
+                        st.session_state.username,
+                    )
+                except EmailSyncError as exc:
+                    st.error(str(exc))
+                else:
+                    st.success(
+                        f"Hotovo: zkontrolováno {sync_stats['checked']} zpráv, "
+                        f"nalezeno {sync_stats['matched']} shod a přidáno "
+                        f"{sync_stats['new']} nových oslovení."
+                    )
+
+    st.markdown("#### Automatická synchronizace")
+    st.code(
+        "SEZNAM_EMAIL_ADDRESS=program.obce@email.cz\n"
+        "SEZNAM_EMAIL_PASSWORD=sem_zadejte_heslo_pro_aplikaci",
+        language="text",
+    )
+    st.caption(
+        "Tyto dva řádky vložte do souboru .env v hlavní složce projektu. "
+        "Soubor .env se neukládá do Gitu."
+    )
 
 conn.close()

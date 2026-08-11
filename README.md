@@ -23,3 +23,9 @@ streamlit run app/main.py
 
 CRM tabulky se při prvním spuštění vytvoří automaticky v `data/obce.duckdb`.
 Existující katalog obcí se nemění.
+
+## Synchronizace Seznam Email
+
+Zkopírujte hodnoty z `.env.example` do lokálního souboru `.env` a doplňte heslo
+pro poštovní aplikaci. Aplikace používá pouze zabezpečené IMAP spojení a ze
+složky Odeslané čte hlavičky zpráv, nikoliv jejich obsah nebo přílohy.

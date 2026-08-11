@@ -7,3 +7,4 @@ duckdb
 rapidfuzz
 bcrypt
 beautifulsoup4
+python-dotenv
