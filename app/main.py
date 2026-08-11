@@ -1,4 +1,5 @@
 from io import BytesIO
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -56,6 +57,49 @@ def response_status(last_sent, last_received, now=None):
     waiting_days = max((now - last_sent).days, 0)
     state = "Bez odpovědi" if waiting_days >= RESPONSE_DEADLINE_DAYS else "Čekáme"
     return state, waiting_days
+
+
+def configured_value(name, default=""):
+    """Read local .env values or Streamlit Cloud secrets without exposing them."""
+    try:
+        secret = st.secrets.get(name)
+    except (FileNotFoundError, KeyError):
+        secret = None
+    return str(secret) if secret else os.getenv(name, default)
+
+
+@st.fragment(run_every="10m")
+def automatic_email_sync():
+    address = configured_value("SEZNAM_EMAIL_ADDRESS", "program.obce@email.cz")
+    password = configured_value("SEZNAM_EMAIL_PASSWORD") or st.session_state.get(
+        "email_password_input", ""
+    )
+    if not password:
+        st.info(
+            "Automatická synchronizace čeká na heslo. Zadejte ho níže nebo ho "
+            "uložte do Streamlit Secrets."
+        )
+        return
+
+    sync_conn = connect()
+    try:
+        init_crm(sync_conn)
+        init_email_sync(sync_conn)
+        stats = sync_mailbox(
+            sync_conn, address, password, st.session_state.username, limit=100
+        )
+    except EmailSyncError as exc:
+        st.warning(f"Automatická synchronizace se nezdařila: {exc}")
+    finally:
+        sync_conn.close()
+
+    if "stats" in locals():
+        checked_at = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        st.session_state.email_last_auto_sync = checked_at
+        st.success(
+            f"Automatická synchronizace aktivní · poslední kontrola {checked_at} · "
+            f"nové zprávy: {stats['new']}"
+        )
 
 if "logged" not in st.session_state:
     st.session_state.logged = False
@@ -640,28 +684,20 @@ with tab_email:
         "CRM načte přijaté i odeslané zprávy a porovná jejich adresy s e-maily obcí. "
         "Ukládá text komunikace a názvy příloh; samotné soubory příloh nestahuje."
     )
-    configured_address = os.getenv("SEZNAM_EMAIL_ADDRESS", "program.obce@email.cz")
-    configured_password = os.getenv("SEZNAM_EMAIL_PASSWORD", "")
-    if configured_password and not st.session_state.get("email_auto_synced"):
-        try:
-            auto_stats = sync_mailbox(
-                conn, configured_address, configured_password, st.session_state.username
-            )
-        except EmailSyncError as exc:
-            st.warning(f"Automatická synchronizace: {exc}")
-        else:
-            st.session_state.email_auto_synced = True
-            if auto_stats["new"]:
-                st.toast(
-                    f"E-mail synchronizován: {auto_stats['new']} nových zpráv.",
-                    icon="📧",
-                )
+    configured_address = configured_value(
+        "SEZNAM_EMAIL_ADDRESS", "program.obce@email.cz"
+    )
+    configured_password = configured_value("SEZNAM_EMAIL_PASSWORD")
+    automatic_email_sync()
 
-    email_address = st.text_input("E-mailová adresa", value=configured_address)
+    email_address = st.text_input(
+        "E-mailová adresa", value=configured_address, key="email_address_input"
+    )
     email_password = st.text_input(
         "Heslo pro poštovní aplikaci",
         value=configured_password,
         type="password",
+        key="email_password_input",
         help="Při dvoufázovém ověření použijte samostatné heslo pro poštovní program.",
     )
     if st.button("🔄 Synchronizovat e-mailovou komunikaci", type="primary"):
@@ -684,15 +720,16 @@ with tab_email:
                         f"({sync_stats['sent']} odeslaných, {sync_stats['received']} přijatých)."
                     )
 
-    st.markdown("#### Automatická synchronizace")
+    st.markdown("#### Nastavení automatické synchronizace")
     st.code(
-        "SEZNAM_EMAIL_ADDRESS=program.obce@email.cz\n"
-        "SEZNAM_EMAIL_PASSWORD=sem_zadejte_heslo_pro_aplikaci",
-        language="text",
+        'SEZNAM_EMAIL_ADDRESS = "program.obce@email.cz"\n'
+        'SEZNAM_EMAIL_PASSWORD = "sem_zadejte_skutecne_heslo"',
+        language="toml",
     )
     st.caption(
         "Tyto dva řádky vložte do souboru .env v hlavní složce projektu. "
-        "Soubor .env se neukládá do Gitu."
+        "Na Streamlit Cloud vložte stejné hodnoty do Settings → Secrets. "
+        "Kontrola probíhá každých 10 minut, dokud je relace aplikace aktivní."
     )
 
 conn.close()
