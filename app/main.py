@@ -1,129 +1,376 @@
-import streamlit as st
-import duckdb
-import pandas as pd
 from io import BytesIO
-from geopy.geocoders import Nominatim
-from distance import vzdalenost
-from auth import login, logout
-from pathlib import Path
 
-st.set_page_config(page_title="Města a obce ČR", page_icon="🏛️", layout="wide")
-# Přihlášení
+import pandas as pd
+import streamlit as st
+from geopy.geocoders import Nominatim
+
+from auth import login, logout
+from crm import (
+    ACTIVITY_TYPES,
+    PRIORITIES,
+    STATUSES,
+    add_activity,
+    add_task,
+    connect,
+    init_crm,
+    save_record,
+    set_contacted_on,
+    set_task_completed,
+    update_inline_crm,
+    update_municipality,
+)
+from distance import vzdalenost
+
+
+st.set_page_config(page_title="CRM obcí ČR", page_icon="🏛️", layout="wide")
+
 if "logged" not in st.session_state:
     st.session_state.logged = False
-
 if not st.session_state.logged:
     login()
     st.stop()
-BASE_DIR = Path(__file__).resolve().parent.parent
-conn = duckdb.connect(str(BASE_DIR / "data" / "obce.duckdb"))
-geolocator = Nominatim(user_agent="obce_app")
 
-st.markdown("""
-<style>
-.main h1 {
-    color:#0F4C81;
-}
+conn = connect()
+init_crm(conn)
 
-div[data-testid="stMetric"]{
-    border:1px solid #e8e8e8;
-    border-radius:12px;
-    padding:12px;
-    background:#fafafa;
-}
-</style>
-""", unsafe_allow_html=True)
-
-st.markdown("# 🏛️ Města a obce ČR")
-st.markdown("### Vyhledávání obcí, kontaktů a obecních úřadů podle vzdálenosti")
-st.divider()
+st.markdown(
+    """
+    <style>
+    .main h1 { color: #0F4C81; }
+    div[data-testid="stMetric"] {
+        border: 1px solid #e8e8e8; border-radius: 12px;
+        padding: 12px; background: #fafafa;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 with st.sidebar:
-
     st.success(f"👤 {st.session_state.display_name}")
     st.caption(f"Role: {st.session_state.role}")
-
-    if st.button("🚪 Odhlásit", use_container_width=True):
+    if st.button("🚪 Odhlásit", width="stretch"):
         logout()
-
     st.divider()
+    st.caption("CRM obcí ČR")
 
-    st.header("⚙️ Nastavení")
+st.title("🏛️ CRM obcí ČR")
+st.caption("Vyhledávání obcí, obchodní pipeline, aktivity a úkoly")
 
-    mesto = st.text_input(
-        "Výchozí obec",
-        value="Heřmanův Městec"
-    )
+tab_search, tab_pipeline, tab_detail, tab_tasks = st.tabs(
+    ["🔎 Vyhledávání", "📊 Pipeline", "🏢 Detail obce", "✅ Úkoly"]
+)
 
-    polomer = st.slider(
-        "Poloměr (km)",
-        1,
-        100,
-        20
-    )
 
-    hledat = st.button(
-        "🔎 Vyhledat",
-        use_container_width=True
-    )
+with tab_search:
+    left, middle, right = st.columns([2, 1, 1])
+    with left:
+        mesto = st.text_input("Výchozí obec", value="Heřmanův Městec")
+    with middle:
+        polomer = st.slider("Poloměr (km)", 1, 100, 20)
+    with right:
+        st.write("")
+        st.write("")
+        hledat = st.button("🔎 Vyhledat", type="primary", width="stretch")
 
-if hledat:
-    location = geolocator.geocode(f"{mesto}, Česká republika")
-    if location is None:
-        st.error("Obec nebyla nalezena.")
-        st.stop()
+    if hledat:
+        local = conn.execute(
+            """
+            SELECT latitude, longitude FROM obce
+            WHERE lower(nazev) = lower(?) AND latitude IS NOT NULL
+            ORDER BY kod_obce LIMIT 1
+            """,
+            [mesto.strip()],
+        ).fetchone()
 
-    obce = conn.execute('''
-        SELECT nazev, latitude, longitude, web, email, telefon, ico
-        FROM obce
-        WHERE latitude IS NOT NULL
-    ''').fetchall()
+        if local:
+            latitude, longitude = local
+        else:
+            try:
+                location = Nominatim(user_agent="obce_crm_app", timeout=5).geocode(
+                    f"{mesto}, Česká republika"
+                )
+            except Exception:
+                location = None
+            if location is None:
+                st.error("Obec nebyla nalezena. Zkontrolujte její název.")
+                st.stop()
+            latitude, longitude = location.latitude, location.longitude
 
-    vysledky=[]
+        st.session_state.search_context = (latitude, longitude, polomer)
 
-    for obec in obce:
-        km=vzdalenost(location.latitude, location.longitude, obec[1], obec[2])
-        if km<=polomer:
-            vysledky.append({
-                "Obec":obec[0],
-                "Vzdálenost (km)":round(km,2),
-                "🌐 Web":obec[3] or "",
-                "📧 E-mail":obec[4] or "",
-                "☎️ Telefon":obec[5] or "",
-                "🏢 IČO":obec[6] or ""
-            })
+    if "search_context" in st.session_state:
+        latitude, longitude, active_radius = st.session_state.search_context
+        rows = conn.execute(
+            """
+            SELECT o.kod_obce, o.nazev, o.okres, o.kraj, o.latitude, o.longitude,
+                   o.web, o.email, o.telefon, o.ico,
+                   coalesce(c.status, 'Nová') AS status, c.contacted_on,
+                   CASE WHEN u.username IS NOT NULL
+                        THEN u.display_name || ' (' || u.username || ')'
+                        ELSE coalesce(c.owner_username, '—') END AS owner
+            FROM obce o
+            LEFT JOIN crm_records c USING (kod_obce)
+            LEFT JOIN users u ON u.username = c.owner_username
+            WHERE o.latitude IS NOT NULL AND o.longitude IS NOT NULL
+            """
+        ).fetchall()
 
-    df=pd.DataFrame(vysledky)
-    if not df.empty:
-        df=df.sort_values("Vzdálenost (km)")
+        results = []
+        for row in rows:
+            km = vzdalenost(latitude, longitude, row[4], row[5])
+            if km <= active_radius:
+                results.append(
+                    {
+                        "Kód": row[0], "Obec": row[1], "Okres": row[2] or "",
+                        "Kraj": row[3] or "", "Vzdálenost (km)": round(km, 2),
+                        "Stav CRM": row[10], "Osloveno": row[11], "Obchodník": row[12],
+                        "Web": row[6] or "", "E-mail": row[7] or "",
+                        "Telefon": row[8] or "", "IČO": row[9] or "",
+                    }
+                )
 
-    c1,c2,c3,c4=st.columns(4)
-    c1.metric("🏘️ Obcí",len(df))
-    c2.metric("🌐 Webů",(df["🌐 Web"]!="").sum())
-    c3.metric("📧 E-mailů",(df["📧 E-mail"]!="").sum())
-    c4.metric("☎️ Telefonů",(df["☎️ Telefon"]!="").sum())
+        columns = ["Kód", "Obec", "Okres", "Kraj", "Vzdálenost (km)", "Stav CRM", "Osloveno",
+                   "Obchodník", "Web", "E-mail", "Telefon", "IČO"]
+        df = pd.DataFrame(results, columns=columns).sort_values("Vzdálenost (km)")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("🏘️ Obcí", len(df))
+        c2.metric("🌐 Webů", int(df["Web"].ne("").sum()))
+        c3.metric("📧 E-mailů", int(df["E-mail"].ne("").sum()))
+        c4.metric("☎️ Telefonů", int(df["Telefon"].ne("").sum()))
 
-    st.divider()
-    st.subheader("📋 Výsledky")
-
-    st.data_editor(
-        df,
-        hide_index=True,
-        disabled=True,
-        use_container_width=True,
-        column_config={
-            "🌐 Web": st.column_config.LinkColumn("🌐 Web")
+        active_users = conn.execute(
+            "SELECT username, display_name FROM users WHERE active ORDER BY display_name"
+        ).fetchall()
+        inline_user_labels = {"—": ""} | {
+            f"{display_name} ({username})": username for username, display_name in active_users
         }
-    )
 
-    buffer=BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer,index=False)
+        edited_df = st.data_editor(
+            df, hide_index=True, width="stretch", key="search_results_editor",
+            disabled=["Kód", "Vzdálenost (km)"],
+            column_config={
+                "Web": st.column_config.LinkColumn("Web"),
+                "Stav CRM": st.column_config.SelectboxColumn(
+                    "Stav CRM", options=STATUSES, required=True
+                ),
+                "Osloveno": st.column_config.DateColumn(
+                    "Osloveno", help="Datum, kdy jste obci poslali e-mail", format="DD.MM.YYYY"
+                ),
+                "Obchodník": st.column_config.SelectboxColumn(
+                    "Obchodník", options=list(inline_user_labels), required=True
+                ),
+            },
+        )
+        changes = 0
+        original_rows = df.set_index("Kód").to_dict("index")
+        for _, edited_row in edited_df.iterrows():
+            code = int(edited_row["Kód"])
+            original = original_rows[code]
+            value = edited_row["Osloveno"]
+            new_date = None if pd.isna(value) else pd.Timestamp(value).date()
+            old_value = original["Osloveno"]
+            old_date = None if pd.isna(old_value) else pd.Timestamp(old_value).date()
+            if new_date != old_date:
+                changes += int(
+                    set_contacted_on(conn, code, new_date, st.session_state.username)
+                )
+            municipality_columns = ["Obec", "Okres", "Kraj", "Web", "E-mail", "Telefon", "IČO"]
+            if any(str(edited_row[col] or "") != str(original[col] or "") for col in municipality_columns):
+                update_municipality(
+                    conn, code, *(str(edited_row[col] or "") for col in municipality_columns)
+                )
+                changes += 1
+            if (
+                edited_row["Stav CRM"] != original["Stav CRM"]
+                or edited_row["Obchodník"] != original["Obchodník"]
+            ):
+                update_inline_crm(
+                    conn, code, edited_row["Stav CRM"],
+                    inline_user_labels.get(edited_row["Obchodník"], ""),
+                )
+                changes += 1
+        if changes:
+            st.toast(f"Změny byly automaticky uloženy ({changes}×).", icon="✅")
+            st.rerun()
+        buffer = BytesIO()
+        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False)
+        st.download_button(
+            "📥 Exportovat výsledky do Excelu", buffer.getvalue(), "obce_crm.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
-    st.download_button(
-        "📥 Exportovat výsledky do Excelu",
-        data=buffer.getvalue(),
-        file_name="obce.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
-    )
+
+with tab_pipeline:
+    summary = conn.execute(
+        """
+        SELECT s.status, count(c.kod_obce) AS pocet
+        FROM (SELECT unnest(?) AS status) s
+        LEFT JOIN crm_records c ON c.status = s.status
+        GROUP BY s.status
+        """,
+        [STATUSES],
+    ).fetchdf()
+    metric_cols = st.columns(len(STATUSES))
+    for col, status in zip(metric_cols, STATUSES):
+        count = int(summary.loc[summary["status"] == status, "pocet"].iloc[0])
+        col.metric(status, count)
+
+    status_filter = st.multiselect("Zobrazit stavy", STATUSES, default=STATUSES)
+    if status_filter:
+        placeholders = ", ".join("?" for _ in status_filter)
+        pipeline = conn.execute(
+            f"""
+            SELECT o.kod_obce AS "Kód", o.nazev AS "Obec", o.okres AS "Okres",
+                   c.status AS "Stav", c.priority AS "Priorita",
+                   coalesce(u.display_name, c.owner_username, '') AS "Obchodník",
+                   c.next_contact AS "Další kontakt", o.email AS "E-mail",
+                   o.telefon AS "Telefon", c.updated_at AS "Aktualizováno"
+            FROM crm_records c
+            JOIN obce o USING (kod_obce)
+            LEFT JOIN users u ON u.username = c.owner_username
+            WHERE c.status IN ({placeholders})
+            ORDER BY c.next_contact NULLS LAST, c.updated_at DESC
+            """,
+            status_filter,
+        ).fetchdf()
+        st.dataframe(pipeline, hide_index=True, width="stretch")
+    else:
+        st.info("Vyberte alespoň jeden stav.")
+
+
+with tab_detail:
+    municipalities = conn.execute(
+        """
+        SELECT kod_obce, nazev, coalesce(okres, ''), coalesce(kraj, '')
+        FROM obce ORDER BY nazev, okres, kod_obce
+        """
+    ).fetchall()
+    municipality_map = {
+        f"{name} — {district or region or 'bez okresu'} [{code}]": code
+        for code, name, district, region in municipalities
+    }
+    selected_label = st.selectbox("Vyberte obec", municipality_map.keys())
+    kod_obce = municipality_map[selected_label]
+
+    obec = conn.execute(
+        """
+        SELECT o.nazev, o.okres, o.kraj, o.web, o.email, o.telefon, o.ico,
+               coalesce(c.status, 'Nová'), coalesce(c.priority, 'Střední'),
+               coalesce(c.owner_username, ''), c.next_contact, coalesce(c.note, '')
+        FROM obce o LEFT JOIN crm_records c USING (kod_obce)
+        WHERE o.kod_obce = ?
+        """,
+        [kod_obce],
+    ).fetchone()
+    users = conn.execute(
+        "SELECT username, display_name FROM users WHERE active ORDER BY display_name"
+    ).fetchall()
+    user_labels = {"— Nepřiřazeno —": ""} | {f"{name} ({username})": username for username, name in users}
+
+    st.subheader(obec[0])
+    info1, info2, info3, info4 = st.columns(4)
+    info1.write(f"**Okres:** {obec[1] or '—'}")
+    info2.write(f"**Kraj:** {obec[2] or '—'}")
+    info3.write(f"**E-mail:** {obec[4] or '—'}")
+    info4.write(f"**Telefon:** {obec[5] or '—'}")
+    if obec[3]:
+        st.link_button("🌐 Otevřít web obce", obec[3])
+
+    with st.form("crm_record_form"):
+        a, b, c = st.columns(3)
+        status = a.selectbox("Stav", STATUSES, index=STATUSES.index(obec[7]))
+        priority = b.selectbox("Priorita", PRIORITIES, index=PRIORITIES.index(obec[8]))
+        owner_keys = list(user_labels)
+        current_owner = next((label for label, value in user_labels.items() if value == obec[9]), owner_keys[0])
+        owner_label = c.selectbox("Obchodník", owner_keys, index=owner_keys.index(current_owner))
+        has_next_contact = st.checkbox("Naplánovat další kontakt", value=obec[10] is not None)
+        next_contact = st.date_input("Datum dalšího kontaktu", value=obec[10] or "today", disabled=not has_next_contact)
+        note = st.text_area("Souhrnná poznámka", value=obec[11], height=100)
+        if st.form_submit_button("💾 Uložit CRM údaje", type="primary"):
+            save_record(conn, kod_obce, status, priority, user_labels[owner_label],
+                        next_contact if has_next_contact else None, note)
+            st.success("CRM údaje byly uloženy.")
+            st.rerun()
+
+    activity_col, task_col = st.columns(2)
+    with activity_col:
+        st.markdown("#### Přidat aktivitu")
+        with st.form("activity_form", clear_on_submit=True):
+            activity_type = st.selectbox("Typ aktivity", ACTIVITY_TYPES)
+            subject = st.text_input("Předmět")
+            detail = st.text_area("Detail", height=90)
+            if st.form_submit_button("➕ Přidat aktivitu"):
+                if not subject.strip():
+                    st.error("Vyplňte předmět aktivity.")
+                else:
+                    add_activity(conn, kod_obce, activity_type, subject.strip(), detail,
+                                 st.session_state.username)
+                    st.success("Aktivita byla přidána.")
+                    st.rerun()
+    with task_col:
+        st.markdown("#### Přidat úkol")
+        with st.form("task_form", clear_on_submit=True):
+            task_title = st.text_input("Název úkolu")
+            due_date = st.date_input("Termín", value="today")
+            assigned_label = st.selectbox("Přiřadit", list(user_labels), key="task_owner")
+            if st.form_submit_button("➕ Přidat úkol"):
+                if not task_title.strip():
+                    st.error("Vyplňte název úkolu.")
+                else:
+                    add_task(conn, kod_obce, task_title.strip(), due_date,
+                             user_labels[assigned_label], st.session_state.username)
+                    st.success("Úkol byl přidán.")
+                    st.rerun()
+
+    st.markdown("#### Historie aktivit")
+    activities = conn.execute(
+        """
+        SELECT activity_type AS "Typ", subject AS "Předmět", detail AS "Detail",
+               created_by AS "Vytvořil", created_at AS "Datum"
+        FROM crm_activities WHERE kod_obce = ? ORDER BY created_at DESC
+        """,
+        [kod_obce],
+    ).fetchdf()
+    if activities.empty:
+        st.caption("Zatím bez aktivit.")
+    else:
+        st.dataframe(activities, hide_index=True, width="stretch")
+
+
+with tab_tasks:
+    mine_only = st.checkbox("Pouze moje úkoly", value=True)
+    show_completed = st.checkbox("Zobrazit dokončené", value=False)
+    clauses, params = ["1 = 1"], []
+    if mine_only:
+        clauses.append("t.assigned_to = ?")
+        params.append(st.session_state.username)
+    if not show_completed:
+        clauses.append("t.completed = FALSE")
+    tasks = conn.execute(
+        f"""
+        SELECT t.id, o.nazev, t.title, t.due_date, t.assigned_to, t.completed,
+               CASE WHEN NOT t.completed AND t.due_date < CURRENT_DATE THEN 'Po termínu' ELSE '' END
+        FROM crm_tasks t JOIN obce o USING (kod_obce)
+        WHERE {' AND '.join(clauses)}
+        ORDER BY t.completed, t.due_date NULLS LAST, t.created_at DESC
+        """,
+        params,
+    ).fetchall()
+    if not tasks:
+        st.info("Žádné úkoly pro zvolený filtr.")
+    else:
+        for task_id, name, title, due, assigned, completed, warning in tasks:
+            cols = st.columns([1, 3, 2, 2, 1])
+            cols[0].write("🔴" if warning else ("✅" if completed else "🟡"))
+            cols[1].write(f"**{title}**\n\n{name}")
+            cols[2].write(f"Termín: {due or '—'}")
+            cols[3].write(f"Přiřazeno: {assigned or '—'}")
+            label = "Obnovit" if completed else "Dokončit"
+            if cols[4].button(label, key=f"task_{task_id}"):
+                set_task_completed(conn, task_id, not completed)
+                st.rerun()
+            st.divider()
+
+conn.close()

@@ -6,3 +6,4 @@ requests
 duckdb
 rapidfuzz
 bcrypt
+beautifulsoup4

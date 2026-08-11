@@ -17,7 +17,7 @@ def login():
     username = st.text_input("Uživatelské jméno")
     password = st.text_input("Heslo", type="password")
 
-    if st.button("Přihlásit", use_container_width=True):
+    if st.button("Přihlásit", width="stretch"):
 
         user = conn.execute("""
             SELECT
@@ -31,6 +31,7 @@ def login():
         """, [username]).fetchone()
 
         if user is None:
+            conn.close()
             st.error("Neplatné uživatelské jméno nebo heslo.")
             return
 
@@ -44,8 +45,10 @@ def login():
             st.session_state.display_name = user[1]
             st.session_state.role = user[3]
 
+            conn.close()
             st.rerun()
 
+        conn.close()
         st.error("Neplatné uživatelské jméno nebo heslo.")
 
 
