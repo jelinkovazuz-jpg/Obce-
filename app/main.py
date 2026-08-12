@@ -39,6 +39,7 @@ from app.email_sender import (
     init_email_sender,
     send_individual_messages,
 )
+from app.innogy_import import InnogyImportError, import_contracts, init_innogy
 
 
 load_dotenv()
@@ -111,6 +112,7 @@ conn = connect()
 init_crm(conn)
 init_email_sync(conn)
 init_email_sender(conn)
+init_innogy(conn)
 
 st.markdown(
     """
@@ -133,6 +135,7 @@ def quick_municipality_card(kod_obce):
     card_conn = connect()
     init_crm(card_conn)
     init_email_sync(card_conn)
+    init_innogy(card_conn)
     obec = card_conn.execute("""
         SELECT o.nazev,o.okres,o.kraj,o.web,o.email,o.telefon,o.ico,
                coalesce(c.status,'Nová'),coalesce(c.priority,'Střední'),
@@ -218,6 +221,28 @@ def quick_municipality_card(kod_obce):
         f"Poslední oslovení: {last_sent.strftime('%d.%m.%Y') if last_sent else '—'} · "
         f"Stav odpovědi: {response_label}"
     )
+    innogy_summary = card_conn.execute("""
+        SELECT count(*),count(distinct ean_eic),
+               string_agg(distinct commodity, ', ' ORDER BY commodity)
+        FROM innogy_contracts WHERE kod_obce=?
+    """, [kod_obce]).fetchone()
+    st.markdown("#### Innogy smlouvy")
+    if innogy_summary[0]:
+        i1, i2, i3 = st.columns(3)
+        i1.metric("Smluv", innogy_summary[0])
+        i2.metric("Odběrných míst", innogy_summary[1])
+        i3.metric("Komodity", innogy_summary[2] or "—")
+        innogy_rows = card_conn.execute("""
+            SELECT commodity AS "Komodita",ean_eic AS "EAN/EIC",
+                   product AS "Produkt",opportunity_status AS "Stav",
+                   signed_at AS "Podepsáno",verification_status AS "Ověření",
+                   consumption_gas AS "Spotřeba ZP",consumption_high AS "Spotřeba VT",
+                   consumption_low AS "Spotřeba NT"
+            FROM innogy_contracts WHERE kod_obce=? ORDER BY signed_at DESC NULLS LAST
+        """, [kod_obce]).fetchdf()
+        st.dataframe(innogy_rows, hide_index=True, width="stretch")
+    else:
+        st.caption("K této obci zatím nejsou spárované smlouvy Innogy.")
     if st.button("Zavřít kartu", key=f"close_quick_{kod_obce}"):
         if "obec" in st.query_params:
             del st.query_params["obec"]
@@ -236,8 +261,8 @@ with st.sidebar:
 st.title("🏛️ CRM obcí ČR")
 st.caption("Vyhledávání obcí, obchodní pipeline, aktivity a úkoly")
 
-tab_search, tab_pipeline, tab_detail, tab_tasks, tab_email = st.tabs(
-    ["🔎 Vyhledávání", "📊 Pipeline", "🏢 Detail obce", "✅ Úkoly", "📧 E-mail"]
+tab_search, tab_pipeline, tab_detail, tab_tasks, tab_email, tab_innogy = st.tabs(
+    ["🔎 Vyhledávání", "📊 Pipeline", "🏢 Detail obce", "✅ Úkoly", "📧 E-mail", "⚡ Innogy"]
 )
 
 
@@ -735,5 +760,67 @@ with tab_email:
         "Na Streamlit Cloud vložte stejné hodnoty do Settings → Secrets. "
         "Kontrola probíhá každých 10 minut, dokud je relace aplikace aktivní."
     )
+
+
+with tab_innogy:
+    st.subheader("Import smluv Innogy iSales")
+    st.caption(
+        "Nahrajte Excel export ContractListExport.xlsx. Obce se párují primárně "
+        "podle IČO; opakovaný import stejné smlouvy ji aktualizuje."
+    )
+    innogy_file = st.file_uploader("Excel export z iSales", type=["xlsx"], key="innogy_upload")
+    if innogy_file is not None and st.button("⚡ Importovat smlouvy", type="primary"):
+        try:
+            result = import_contracts(
+                conn, innogy_file, innogy_file.name, st.session_state.username
+            )
+        except InnogyImportError as exc:
+            st.error(str(exc))
+        else:
+            st.success(
+                f"Importováno {result['total']} řádků: {result['matched']} spárováno "
+                f"s obcemi, {result['unmatched']} nespárováno."
+            )
+
+    import_history = conn.execute("""
+        SELECT file_name AS "Soubor",imported_at AS "Importováno",
+               total_rows AS "Řádků",matched_rows AS "Spárováno",
+               unmatched_rows AS "Nespárováno",imported_by AS "Uživatel"
+        FROM innogy_imports ORDER BY imported_at DESC LIMIT 20
+    """).fetchdf()
+    if not import_history.empty:
+        st.markdown("#### Historie importů")
+        st.dataframe(import_history, hide_index=True, width="stretch")
+
+    matched_contracts = conn.execute("""
+        SELECT o.nazev AS "Obec",c.ico AS "IČO",c.commodity AS "Komodita",
+               c.ean_eic AS "EAN/EIC",c.product AS "Produkt",
+               c.opportunity_status AS "Stav",c.signed_at AS "Podepsáno",
+               c.verification_status AS "Ověření",c.seller_name AS "Prodejce"
+        FROM innogy_contracts c JOIN obce o USING (kod_obce)
+        ORDER BY c.updated_at DESC
+    """).fetchdf()
+    st.markdown("#### Spárované obecní smlouvy")
+    if matched_contracts.empty:
+        st.caption("Zatím nebyly importovány žádné spárované obecní smlouvy.")
+    else:
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Smluv", len(matched_contracts))
+        m2.metric("Obcí", matched_contracts["Obec"].nunique())
+        m3.metric("Odběrných míst", matched_contracts["EAN/EIC"].nunique())
+        st.dataframe(matched_contracts, hide_index=True, width="stretch")
+
+    unmatched_contracts = conn.execute("""
+        SELECT customer_name AS "Zákazník",ico AS "IČO",ean_eic AS "EAN/EIC",
+               commodity AS "Komodita",product AS "Produkt",seller_name AS "Prodejce",
+               updated_at AS "Poslední import"
+        FROM innogy_contracts WHERE kod_obce IS NULL
+        ORDER BY updated_at DESC
+    """).fetchdf()
+    st.markdown("#### Nespárované záznamy")
+    if unmatched_contracts.empty:
+        st.caption("Všechny importované obecní smlouvy jsou spárované.")
+    else:
+        st.dataframe(unmatched_contracts, hide_index=True, width="stretch")
 
 conn.close()

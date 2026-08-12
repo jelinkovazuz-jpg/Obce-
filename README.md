@@ -14,6 +14,7 @@ obchodních vztahů s obcemi.
 - ukládání kopií odeslaných nabídek do složky Odeslané přes IMAP,
 - automatická evidence odpovědí a filtr obcí bez odpovědi po 7 dnech,
 - automatická synchronizace e-mailové komunikace každých 10 minut,
+- import smluv z Innogy iSales Excelu a párování k obcím podle IČO,
 - přihlášení uživatelů a role.
 
 ## Spuštění
