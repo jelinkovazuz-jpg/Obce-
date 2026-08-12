@@ -4,7 +4,6 @@ import json
 import os
 from pathlib import Path
 import sys
-import time
 
 import pandas as pd
 import streamlit as st
@@ -183,9 +182,8 @@ def quick_municipality_card(kod_obce):
                 next_contact if has_next else None, note,
             )
             st.toast("Karta obce byla uložena.", icon="✅")
-            st.session_state.quick_card_dismissed = (kod_obce, time.time())
-            st.session_state.pop("quick_detail_code", None)
-            st.session_state.pop("municipality_name_click", None)
+            if "obec" in st.query_params:
+                del st.query_params["obec"]
             card_conn.close()
             st.rerun(scope="app")
 
@@ -221,9 +219,8 @@ def quick_municipality_card(kod_obce):
         f"Stav odpovědi: {response_label}"
     )
     if st.button("Zavřít kartu", key=f"close_quick_{kod_obce}"):
-        st.session_state.quick_card_dismissed = (kod_obce, time.time())
-        st.session_state.pop("quick_detail_code", None)
-        st.session_state.pop("municipality_name_click", None)
+        if "obec" in st.query_params:
+            del st.query_params["obec"]
         card_conn.close()
         st.rerun(scope="app")
     card_conn.close()
@@ -320,7 +317,9 @@ with tab_search:
                 response_state, waiting_days = response_status(last_sent, last_received)
                 results.append(
                     {
-                        "Vybrat": False, "Kód": row[0], "Obec": row[1], "Okres": row[2] or "",
+                        "Vybrat": False, "Kód": row[0],
+                        "Obec": f"[{row[1]}](?obec={row[0]})", "_Název obce": row[1],
+                        "Okres": row[2] or "",
                         "Kraj": row[3] or "", "Vzdálenost (km)": round(km, 2),
                         "Stav CRM": row[10], "Osloveno": row[11], "Obchodník": row[12],
                         "Odpověď": response_state, "Čekáme dní": waiting_days,
@@ -330,7 +329,7 @@ with tab_search:
                     }
                 )
 
-        columns = ["Vybrat", "Kód", "Obec", "Okres", "Kraj", "Vzdálenost (km)",
+        columns = ["Vybrat", "Kód", "Obec", "_Název obce", "Okres", "Kraj", "Vzdálenost (km)",
                    "Stav CRM", "Osloveno", "Odpověď", "Čekáme dní", "Poslední odpověď",
                    "Obchodník", "Web", "E-mail", "Telefon", "IČO"]
         df = pd.DataFrame(results, columns=columns).sort_values("Vzdálenost (km)")
@@ -351,33 +350,14 @@ with tab_search:
             f"{display_name} ({username})": username for username, display_name in active_users
         }
 
-        def open_quick_card():
-            click = st.session_state.get("municipality_name_click")
-            if click is not None:
-                clicked_code = int(df.iloc[click["row"]]["Kód"])
-                dismissed = st.session_state.get("quick_card_dismissed")
-                if (
-                    dismissed
-                    and dismissed[0] == clicked_code
-                    and time.time() - dismissed[1] < 3
-                ):
-                    # Streamlit can replay the button event during the full
-                    # rerun that closes a dialog. Consume that replay once.
-                    st.session_state.pop("quick_card_dismissed", None)
-                    st.session_state.pop("municipality_name_click", None)
-                    return
-                st.session_state.pop("quick_card_dismissed", None)
-                st.session_state.quick_detail_code = clicked_code
-
         edited_df = st.data_editor(
             df, hide_index=True, width="stretch", key="search_results_editor",
-            disabled=["Kód", "Vzdálenost (km)", "Odpověď", "Čekáme dní", "Poslední odpověď"],
+            disabled=["Kód", "Obec", "Vzdálenost (km)", "Odpověď", "Čekáme dní", "Poslední odpověď"],
             column_config={
+                "_Název obce": None,
                 "Web": st.column_config.LinkColumn("Web"),
-                "Obec": st.column_config.ButtonColumn(
-                    "Obec", type="tertiary", pinned=True,
-                    help="Kliknutím otevřete kartu obce",
-                    on_click=open_quick_card, key="municipality_name_click",
+                "Obec": st.column_config.MarkdownColumn(
+                    "Obec", pinned=True, help="Kliknutím otevřete kartu obce"
                 ),
                 "Vybrat": st.column_config.CheckboxColumn(
                     "Vybrat", help="Zařadit obec do rozesílky"
@@ -411,10 +391,11 @@ with tab_search:
                 changes += int(
                     set_contacted_on(conn, code, new_date, st.session_state.username)
                 )
-            municipality_columns = ["Obec", "Okres", "Kraj", "Web", "E-mail", "Telefon", "IČO"]
+            municipality_columns = ["Okres", "Kraj", "Web", "E-mail", "Telefon", "IČO"]
             if any(str(edited_row[col] or "") != str(original[col] or "") for col in municipality_columns):
                 update_municipality(
-                    conn, code, *(str(edited_row[col] or "") for col in municipality_columns)
+                    conn, code, str(edited_row["_Název obce"] or ""),
+                    *(str(edited_row[col] or "") for col in municipality_columns)
                 )
                 changes += 1
             if (
@@ -429,8 +410,12 @@ with tab_search:
         if changes:
             st.toast(f"Změny byly automaticky uloženy ({changes}×).", icon="✅")
             st.rerun()
-        if st.session_state.get("quick_detail_code") is not None:
-            quick_municipality_card(st.session_state.quick_detail_code)
+        requested_code = st.query_params.get("obec")
+        if requested_code:
+            try:
+                quick_municipality_card(int(requested_code))
+            except (TypeError, ValueError):
+                del st.query_params["obec"]
         buffer = BytesIO()
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
             df.to_excel(writer, index=False)
@@ -483,7 +468,7 @@ with tab_search:
             else:
                 recipient_rows = [
                     {
-                        "code": int(row["Kód"]), "name": str(row["Obec"]),
+                        "code": int(row["Kód"]), "name": str(row["_Název obce"]),
                         "district": str(row["Okres"]), "region": str(row["Kraj"]),
                         "email": str(row["E-mail"]),
                     }
