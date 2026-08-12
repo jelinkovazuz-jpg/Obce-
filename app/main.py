@@ -305,6 +305,8 @@ with tab_search:
 
     if "search_context" in st.session_state:
         latitude, longitude, active_radius = st.session_state.search_context
+        current_url = st.context.url or "http://localhost:8501"
+        app_url = current_url.split("?", 1)[0].split("#", 1)[0]
         rows = conn.execute(
             """
             SELECT o.kod_obce, o.nazev, o.okres, o.kraj, o.latitude, o.longitude,
@@ -343,7 +345,8 @@ with tab_search:
                 results.append(
                     {
                         "Vybrat": False, "Kód": row[0],
-                        "Obec": f"[{row[1]}](?obec={row[0]})", "_Název obce": row[1],
+                        "Obec": f"{app_url}?obec={row[0]}#{row[1]}",
+                        "_Název obce": row[1],
                         "Okres": row[2] or "",
                         "Kraj": row[3] or "", "Vzdálenost (km)": round(km, 2),
                         "Stav CRM": row[10], "Osloveno": row[11], "Obchodník": row[12],
@@ -381,8 +384,9 @@ with tab_search:
             column_config={
                 "_Název obce": None,
                 "Web": st.column_config.LinkColumn("Web"),
-                "Obec": st.column_config.MarkdownColumn(
-                    "Obec", pinned=True, help="Kliknutím otevřete kartu obce"
+                "Obec": st.column_config.LinkColumn(
+                    "Obec", pinned=True, disabled=True,
+                    help="Kliknutím otevřete kartu obce", display_text="#(.*)$"
                 ),
                 "Vybrat": st.column_config.CheckboxColumn(
                     "Vybrat", help="Zařadit obec do rozesílky"
