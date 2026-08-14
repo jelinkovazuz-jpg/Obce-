@@ -23,6 +23,7 @@ from app.energy_price_import import (
 )
 from app.invoice_import import InvoiceImportError, parse_supplier_invoice_pdf
 from app.energy_pdf import build_energy_offer_pdf
+from app.crm import save_offer_document
 
 
 def _money(value):
@@ -356,14 +357,37 @@ def render_energy_calculator(conn, username, role):
                         char if char.isalnum() or char in "-_" else "_"
                         for char in quote_label.split("·", 1)[0].strip()
                     )
-                    st.download_button(
-                        "📄 Stáhnout grafickou nabídku v PDF",
-                        data=pdf_data,
-                        file_name=f"nabidka_energii_{safe_customer}.pdf",
-                        mime="application/pdf",
-                        type="primary",
-                        key=f"energy_pdf_{quote_id}",
-                    )
+                    pdf_file_name = f"nabidka_energii_{safe_customer}.pdf"
+                    download_col, save_col = st.columns(2)
+                    with download_col:
+                        st.download_button(
+                            "📄 Stáhnout grafickou nabídku v PDF",
+                            data=pdf_data,
+                            file_name=pdf_file_name,
+                            mime="application/pdf",
+                            type="primary",
+                            key=f"energy_pdf_{quote_id}",
+                            width="stretch",
+                        )
+                    with save_col:
+                        if st.button(
+                            "💾 Uložit do karty obce", key=f"save_energy_pdf_{quote_id}",
+                            width="stretch",
+                        ):
+                            municipality = conn.execute(
+                                "SELECT kod_obce FROM energy_quotes WHERE id=?", [quote_id]
+                            ).fetchone()
+                            if not municipality or municipality[0] is None:
+                                st.error("Nabídka není přiřazená ke kartě obce.")
+                            else:
+                                _, replaced = save_offer_document(
+                                    conn, municipality[0], quote_id, pdf_file_name,
+                                    pdf_data, username,
+                                )
+                                st.success(
+                                    "Aktualizovaná nabídka byla uložena do karty obce."
+                                    if replaced else "Nabídka byla uložena do karty obce."
+                                )
                     for item in result["points"]:
                         y1, full = item["first_year"], item["full"]
                         with st.expander(f"{full['commodity']} · {full['ean_eic']} · {full['address']}"):

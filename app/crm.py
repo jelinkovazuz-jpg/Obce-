@@ -62,6 +62,49 @@ def init_crm(conn):
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS crm_documents (
+            id VARCHAR PRIMARY KEY,
+            kod_obce INTEGER NOT NULL,
+            quote_id VARCHAR UNIQUE,
+            document_type VARCHAR NOT NULL,
+            file_name VARCHAR NOT NULL,
+            mime_type VARCHAR NOT NULL,
+            file_data BLOB NOT NULL,
+            created_by VARCHAR,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
+
+def save_offer_document(conn, kod_obce, quote_id, file_name, pdf_data, username):
+    """Save the latest generated PDF for a quote in its municipality card."""
+    if not pdf_data or not bytes(pdf_data).startswith(b"%PDF"):
+        raise ValueError("Dokument není platné PDF.")
+    existing = conn.execute(
+        "SELECT id FROM crm_documents WHERE quote_id=?", [quote_id]
+    ).fetchone()
+    document_id = existing[0] if existing else str(uuid4())
+    conn.execute(
+        """
+        INSERT INTO crm_documents (
+            id,kod_obce,quote_id,document_type,file_name,mime_type,
+            file_data,created_by,updated_at
+        ) VALUES (?,?,?,'Energetická nabídka',?,'application/pdf',?,?,now())
+        ON CONFLICT (quote_id) DO UPDATE SET
+            kod_obce=excluded.kod_obce,
+            file_name=excluded.file_name,
+            mime_type=excluded.mime_type,
+            file_data=excluded.file_data,
+            created_by=excluded.created_by,
+            updated_at=now()
+        """,
+        [document_id, kod_obce, quote_id, file_name, bytes(pdf_data), username],
+    )
+    return document_id, existing is not None
 
 
 def save_record(conn, kod_obce, status, priority, owner, next_contact, note):

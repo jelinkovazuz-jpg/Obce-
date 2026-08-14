@@ -131,6 +131,28 @@ st.markdown(
 )
 
 
+def render_municipality_documents(document_conn, kod_obce, key_prefix):
+    st.markdown("#### Uložené nabídky a dokumenty")
+    documents = document_conn.execute("""
+        SELECT id,document_type,file_name,mime_type,file_data,updated_at,created_by
+        FROM crm_documents WHERE kod_obce=? ORDER BY updated_at DESC
+    """, [kod_obce]).fetchall()
+    if not documents:
+        st.caption("V kartě zatím nejsou uložené žádné dokumenty.")
+        return
+    for document_id, document_type, file_name, mime_type, file_data, saved_at, created_by in documents:
+        left, right = st.columns([3, 1])
+        left.write(f"**{document_type}**  \n{file_name}")
+        left.caption(
+            f"Uloženo {saved_at:%d.%m.%Y %H:%M}"
+            + (f" · {created_by}" if created_by else "")
+        )
+        right.download_button(
+            "📄 Stáhnout", data=bytes(file_data), file_name=file_name,
+            mime=mime_type, key=f"{key_prefix}_{document_id}", width="stretch",
+        )
+
+
 @st.dialog("Karta obce", width="large")
 def quick_municipality_card(kod_obce):
     # A dialog reruns independently from the main page. It therefore needs
@@ -246,6 +268,7 @@ def quick_municipality_card(kod_obce):
         st.dataframe(innogy_rows, hide_index=True, width="stretch")
     else:
         st.caption("K této obci zatím nejsou spárované smlouvy Innogy.")
+    render_municipality_documents(card_conn, kod_obce, "quick_document")
     if st.button("Zavřít kartu", key=f"close_quick_{kod_obce}"):
         if "obec" in st.query_params:
             del st.query_params["obec"]
@@ -677,6 +700,8 @@ with tab_detail:
                 attachment_names = json.loads(attachments or "[]")
                 if attachment_names:
                     st.caption("Přílohy: " + ", ".join(attachment_names))
+
+    render_municipality_documents(conn, kod_obce, "detail_document")
 
 
 with tab_tasks:
