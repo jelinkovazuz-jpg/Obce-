@@ -32,6 +32,13 @@ U nabídky se eviduje datum jejího vypracování. K vybrané nabídce lze nahr�
 PDF faktur současného dodavatele; po rozpoznání se z nich zakládají jednotlivá
 odběrná místa.
 
+Automatický import faktur aktuálně podporuje vyúčtování elektřiny ČEZ. Načítá
+EAN, adresu, sazbu, skutečnou roční spotřebu, poslední obchodní cenu VT/NT,
+stálý obchodní plat a smluvní termín. Údaje se před uložením vždy zobrazí v
+editovatelném kontrolním formuláři. Automatická prolongace nebo termín v
+minulosti vyvolá upozornění a dodávku nelze založit před datem vypracování
+nabídky.
+
 V administraci jsou předvyplněné vzorové ceny Optimal 36 z roku 2026. Před
 odesláním skutečné nabídky je ověřte proti platnému ceníku. Nová měsíční akce se
 nahraje přímo z původních PDF Innogy pro elektřinu a/nebo plyn. Aplikace před

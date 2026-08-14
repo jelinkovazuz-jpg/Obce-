@@ -9,6 +9,7 @@ from app.energy_calculator import (
     calculate_supply_point,
     create_quote,
     derive_supply_start,
+    EnergyCalculationError,
     init_energy_calculator,
 )
 
@@ -87,6 +88,19 @@ class EnergyCalculatorTest(unittest.TestCase):
             self.conn, self.add_point("Plyn", consumption=0, current_fee=50), 12
         )
         self.assertEqual(result["saving"], -960)
+
+    def test_supply_cannot_start_before_offer_was_prepared(self):
+        quote = create_quote(
+            self.conn, None, "Testovací obec", "innogy-optimal36-ele",
+            "optimal36-ele-example", date(2026, 8, 1), "Test", "tester",
+        )
+        with self.assertRaises(EnergyCalculationError):
+            add_supply_point(
+                self.conn, quote, "Adresa", "EAN", "Elektřina", "Všechny",
+                1, 100, "Dodavatel", 3000, None, 100, "Doba určitá",
+                date(2026, 5, 24), None, None, date(2026, 5, 25),
+                "innogy-optimal36-ele", "optimal36-ele-example",
+            )
 
     def test_invoice_consumption_is_annualized_for_short_period(self):
         self.assertEqual(

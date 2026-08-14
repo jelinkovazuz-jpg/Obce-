@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import streamlit as st
@@ -17,6 +17,7 @@ from app.energy_price_import import (
     import_parsed_pdf,
     parse_innogy_price_pdf,
 )
+from app.invoice_import import InvoiceImportError, parse_supplier_invoice_pdf
 
 
 def _money(value):
@@ -122,14 +123,147 @@ def render_energy_calculator(conn, username, role):
                 help="Můžete nahrát více faktur za elektřinu i plyn současně.",
             )
             if invoice_files:
-                st.success(
-                    f"Připraveno {len(invoice_files)} PDF k načtení: "
-                    + ", ".join(invoice.name for invoice in invoice_files)
-                )
-                st.info(
-                    "Automatické předvyplnění aktivuji po doplnění parseru podle "
-                    "vzorových faktur. Do té doby lze odběrná místa zadat ručně níže."
-                )
+                for invoice_index, invoice in enumerate(invoice_files):
+                    try:
+                        extracted = parse_supplier_invoice_pdf(
+                            invoice.getvalue(), invoice.name
+                        )
+                    except InvoiceImportError as exc:
+                        st.error(str(exc))
+                        continue
+                    with st.expander(
+                        f"Načteno: {extracted['ean_eic']} · {extracted['address']}",
+                        expanded=True,
+                    ):
+                        st.caption(
+                            f"{extracted['supplier']} · {extracted['commodity']} · "
+                            f"faktura {extracted['billing_from']:%d.%m.%Y}–"
+                            f"{extracted['billing_to']:%d.%m.%Y}"
+                        )
+                        invoice_products = _product_options(conn, extracted["commodity"])
+                        invoice_product_labels = {
+                            label: product_id for product_id, label, _, _ in invoice_products
+                        }
+                        with st.form(f"invoice_confirm_{quote_id}_{invoice_index}"):
+                            a, b = st.columns(2)
+                            invoice_address = a.text_input(
+                                "Adresa odběrného místa", value=extracted["address"]
+                            )
+                            invoice_ean = b.text_input("EAN / EIC", value=extracted["ean_eic"])
+                            invoice_rate = a.text_input(
+                                "Distribuční sazba / pásmo", value=extracted["rate_band"]
+                            )
+                            invoice_annual = b.number_input(
+                                "Roční spotřeba (MWh)", min_value=0.0,
+                                value=float(extracted["annual_consumption_mwh"]),
+                                step=0.001, format="%.6f",
+                            )
+                            st.caption(
+                                f"Zdroj spotřeby: {extracted['consumption_source']} · "
+                                f"na faktuře {extracted['actual_consumption_mwh']:.6f} MWh."
+                            )
+                            invoice_vt_share = a.number_input(
+                                "Podíl VT (%)", min_value=0.0, max_value=100.0,
+                                value=float(extracted["vt_share"]), step=0.1,
+                            )
+                            invoice_price_vt = b.number_input(
+                                "Současná cena VT bez DPH (Kč/MWh)", min_value=0.0,
+                                value=float(extracted["current_price_vt"]), step=1.0,
+                            )
+                            invoice_price_nt = None
+                            if extracted["current_price_nt"] is not None:
+                                invoice_price_nt = b.number_input(
+                                    "Současná cena NT bez DPH (Kč/MWh)", min_value=0.0,
+                                    value=float(extracted["current_price_nt"]), step=1.0,
+                                )
+                            invoice_supplier = a.text_input(
+                                "Současný dodavatel", value=extracted["supplier"]
+                            )
+                            invoice_fee = b.number_input(
+                                "Stálý obchodní plat bez DPH (Kč/měsíc)", min_value=0.0,
+                                value=float(extracted["current_monthly_fee"]), step=1.0,
+                            )
+                            invoice_contract_type = st.selectbox(
+                                "Typ smlouvy", CONTRACT_TYPES,
+                                index=CONTRACT_TYPES.index(extracted["contract_type"]),
+                                key=f"invoice_contract_{quote_id}_{invoice_index}",
+                            )
+                            if invoice_contract_type == "Doba určitá":
+                                invoice_contract_end = st.date_input(
+                                    "Datum konce současné smlouvy",
+                                    value=extracted["contract_end_date"],
+                                )
+                                invoice_notice_months = None
+                                invoice_notice_date = None
+                                proposed_start = invoice_contract_end + timedelta(days=1)
+                            else:
+                                invoice_contract_end = None
+                                invoice_notice_months = st.number_input(
+                                    "Výpovědní doba (měsíce)", min_value=0, value=3, step=1
+                                )
+                                invoice_notice_date = st.date_input(
+                                    "Datum podání výpovědi", value=signing_date
+                                )
+                                proposed_start = derive_supply_start(
+                                    invoice_contract_type, signing_date, None,
+                                    invoice_notice_months, invoice_notice_date,
+                                )
+                            invoice_start = st.date_input(
+                                "Předpokládané zahájení dodávky innogy",
+                                value=proposed_start,
+                            )
+                            if extracted["automatic_extension"]:
+                                st.warning(
+                                    "Faktura uvádí automatické prodloužení smlouvy. "
+                                    "Ověřte aktuální konec smlouvy a případně datum opravte."
+                                )
+                            invoice_product_label = st.selectbox(
+                                "Produkt innogy", invoice_product_labels,
+                                key=f"invoice_product_{quote_id}_{invoice_index}",
+                            )
+                            invoice_lists = _price_list_options(
+                                conn, invoice_product_labels[invoice_product_label], signing_date
+                            )
+                            invoice_list_labels = {
+                                name: list_id for list_id, name, _, _ in invoice_lists
+                            }
+                            invoice_list_label = st.selectbox(
+                                "Akční ceník", invoice_list_labels,
+                                key=f"invoice_list_{quote_id}_{invoice_index}",
+                            ) if invoice_lists else None
+                            confirmed = st.checkbox(
+                                "Zkontrolovala jsem načtené údaje a smluvní termín"
+                            )
+                            import_clicked = st.form_submit_button(
+                                "Vytvořit odběrné místo z faktury", type="primary"
+                            )
+                        if import_clicked:
+                            try:
+                                if not confirmed:
+                                    raise EnergyCalculationError(
+                                        "Před importem potvrďte kontrolu údajů."
+                                    )
+                                if not invoice_list_label:
+                                    raise EnergyCalculationError(
+                                        "Pro datum vypracování není dostupný akční ceník."
+                                    )
+                                add_supply_point(
+                                    conn, quote_id, invoice_address, invoice_ean,
+                                    extracted["commodity"], invoice_rate, invoice_annual,
+                                    invoice_vt_share, invoice_supplier, invoice_price_vt,
+                                    invoice_price_nt, invoice_fee, invoice_contract_type,
+                                    invoice_contract_end, invoice_notice_months,
+                                    invoice_notice_date, invoice_start,
+                                    invoice_product_labels[invoice_product_label],
+                                    invoice_list_labels[invoice_list_label],
+                                    invoice.name, extracted["billing_from"],
+                                    extracted["billing_to"], extracted["consumption_source"],
+                                )
+                            except Exception as exc:
+                                st.error(str(exc))
+                            else:
+                                st.success("Odběrné místo bylo vytvořeno z faktury.")
+                                st.rerun()
 
             with st.expander("Přidat odběrné místo", expanded=True):
                 commodity = st.radio("Komodita", COMMODITIES, horizontal=True)

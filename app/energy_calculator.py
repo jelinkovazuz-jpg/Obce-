@@ -74,6 +74,10 @@ def init_energy_calculator(conn):
     """)
     conn.execute("ALTER TABLE energy_supply_points ADD COLUMN IF NOT EXISTS product_id VARCHAR")
     conn.execute("ALTER TABLE energy_supply_points ADD COLUMN IF NOT EXISTS price_list_id VARCHAR")
+    conn.execute("ALTER TABLE energy_supply_points ADD COLUMN IF NOT EXISTS source_invoice_file VARCHAR")
+    conn.execute("ALTER TABLE energy_supply_points ADD COLUMN IF NOT EXISTS billing_from DATE")
+    conn.execute("ALTER TABLE energy_supply_points ADD COLUMN IF NOT EXISTS billing_to DATE")
+    conn.execute("ALTER TABLE energy_supply_points ADD COLUMN IF NOT EXISTS consumption_source VARCHAR")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS energy_price_imports (
             id VARCHAR PRIMARY KEY, file_name VARCHAR NOT NULL,
@@ -352,7 +356,18 @@ def add_supply_point(conn, quote_id, address, ean_eic, commodity, rate_band,
                      current_price_vt, current_price_nt, current_monthly_fee,
                      contract_type, contract_end_date, notice_months,
                      notice_submitted_date, supply_start_date, product_id=None,
-                     price_list_id=None):
+                     price_list_id=None, source_invoice_file=None,
+                     billing_from=None, billing_to=None, consumption_source=None):
+    quote_date = conn.execute(
+        "SELECT signing_date FROM energy_quotes WHERE id=?", [quote_id]
+    ).fetchone()
+    if not quote_date:
+        raise EnergyCalculationError("Nabídka nebyla nalezena.")
+    if supply_start_date < quote_date[0]:
+        raise EnergyCalculationError(
+            "Zahájení dodávky nemůže být před datem vypracování nabídky. "
+            "Zkontrolujte konec nebo prodloužení současné smlouvy."
+        )
     if product_id and price_list_id:
         valid_selection = conn.execute("""
             SELECT 1
@@ -372,13 +387,15 @@ def add_supply_point(conn, quote_id, address, ean_eic, commodity, rate_band,
             id,quote_id,address,ean_eic,commodity,rate_band,annual_consumption,
             vt_share,current_supplier,current_price_vt,current_price_nt,
             current_monthly_fee,contract_type,contract_end_date,notice_months,
-            notice_submitted_date,supply_start_date,product_id,price_list_id
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            notice_submitted_date,supply_start_date,product_id,price_list_id,
+            source_invoice_file,billing_from,billing_to,consumption_source
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, [point_id, quote_id, address.strip(), ean_eic.strip(), commodity, rate_band,
            annual_consumption, vt_share, current_supplier.strip(), current_price_vt,
            current_price_nt, current_monthly_fee, contract_type, contract_end_date,
            notice_months, notice_submitted_date, supply_start_date, product_id,
-           price_list_id])
+           price_list_id, source_invoice_file, billing_from, billing_to,
+           consumption_source])
     return point_id
 
 
