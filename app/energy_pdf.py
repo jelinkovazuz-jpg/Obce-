@@ -37,7 +37,13 @@ def _price(value):
 
 
 def _date(value):
-    return value.strftime("%d. %m. %Y").replace(" 0", " ")
+    return f"{value.day}. {value.month}. {value.year}"
+
+
+def _period_label(period, is_last=False):
+    if is_last:
+        return f"od {_date(period['valid_from'])}"
+    return f"{_date(period['valid_from'])} - {_date(period['valid_to'])}"
 
 
 def _fit(c, text, x, y, max_width, size=9, font="Offer", min_size=6):
@@ -178,7 +184,11 @@ def _detail_page(c, quote, item, meta):
         x = 50 + index * (width - 100) / max(len(periods), 1)
         c.setFillColor(colors.white); c.circle(x, y, 6, stroke=1, fill=1)
         c.setFillColor(MUTED); c.setFont("Offer", 6.5)
-        c.drawString(x, y + 14, _date(period["valid_from"]))
+        timeline_label = (
+            f"od {_date(period['valid_from'])}"
+            if index == len(periods) - 1 else _date(period["valid_from"])
+        )
+        c.drawString(x, y + 14, timeline_label)
         c.setFillColor(DARK); c.setFont("Offer-Bold", 8)
         c.drawString(x, y - 20, _price(period["unit_price"]).replace("/MWh", ""))
 
@@ -191,9 +201,10 @@ def _detail_page(c, quote, item, meta):
     c.drawString(255, table_y - 16, "SOUČASNÝ DODAVATEL")
     c.setFillColor(PINK); c.drawRightString(width - 48, table_y - 16, "INNOGY OPTIMAL 36")
     y = table_y - 35
-    for period in periods[:5]:
+    visible_periods = periods[:5]
+    for index, period in enumerate(visible_periods):
         c.setFillColor(DARK); c.setFont("Offer", 7.5)
-        c.drawString(48, y, f"{_date(period['valid_from'])} - {_date(period['valid_to'])}")
+        c.drawString(48, y, _period_label(period, index == len(periods) - 1))
         c.drawString(255, y, _price(full["current_price_vt"]))
         c.setFillColor(PINK); c.setFont("Offer-Bold", 8)
         c.drawRightString(width - 48, y, _price(period["unit_price"]))
