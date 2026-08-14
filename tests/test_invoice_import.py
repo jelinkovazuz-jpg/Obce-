@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.invoice_import import _parse_invoice_text, parse_supplier_invoice_pdf
+from app.energy_ui import _invoice_row
 
 
 CEZ_TEXT = """VYÚČTOVÁNÍ ZA ELEKTŘINU
@@ -81,6 +82,15 @@ Stálý měsíční plat 130,00 Kč 1 560,00 Kč
         self.assertEqual(result["ean_eic"], "27ZG600Z12345678")
         self.assertEqual(result["current_price_vt"], 1250)
         self.assertEqual(result["current_monthly_fee"], 130)
+
+    def test_expired_fixed_contract_uses_future_notice_period(self):
+        extracted = _parse_invoice_text(CEZ_TEXT, "cez.pdf")
+        row = _invoice_row(extracted, date(2026, 8, 14))
+        self.assertEqual(row["Typ smlouvy"], "Doba neurčitá")
+        self.assertIsNone(row["Konec smlouvy"])
+        self.assertEqual(row["Výpovědní doba"], 3)
+        self.assertEqual(row["Začátek innogy"], date(2026, 12, 1))
+        self.assertIn("už uplynul", row["Upozornění"])
 
 
 if __name__ == "__main__":

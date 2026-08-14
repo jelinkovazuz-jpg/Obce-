@@ -70,15 +70,26 @@ def _default_product_price_list(conn, commodity, signing_date):
 
 
 def _invoice_row(extracted, signing_date):
-    fixed = extracted["contract_type"] == "Doba určitá" and extracted["contract_end_date"]
+    stated_contract_end = extracted["contract_end_date"]
+    fixed = (
+        extracted["contract_type"] == "Doba určitá"
+        and stated_contract_end
+        and stated_contract_end >= signing_date
+    )
     contract_type = "Doba určitá" if fixed else "Doba neurčitá"
-    contract_end = extracted["contract_end_date"] if fixed else None
+    contract_end = stated_contract_end if fixed else None
     notice_months = 0 if fixed else 3
     notice_date = None if fixed else signing_date
     supply_start = (
         contract_end + timedelta(days=1) if fixed else
         derive_supply_start(contract_type, signing_date, None, notice_months, notice_date)
     )
+    warnings = list(extracted.get("warnings", []))
+    if stated_contract_end and stated_contract_end < signing_date:
+        warnings.append(
+            "Konec smlouvy uvedený na faktuře už uplynul; předběžně počítáme "
+            "s dobou neurčitou a tříměsíční výpovědní dobou."
+        )
     return {
         "Soubor": extracted["file_name"],
         "Dodavatel": extracted["supplier"],
@@ -99,7 +110,7 @@ def _invoice_row(extracted, signing_date):
         "Faktura od": extracted["billing_from"],
         "Faktura do": extracted["billing_to"],
         "Zdroj spotřeby": extracted["consumption_source"],
-        "Upozornění": " ".join(extracted.get("warnings", [])),
+        "Upozornění": " ".join(warnings),
     }
 
 
