@@ -22,6 +22,7 @@ from app.energy_price_import import (
     parse_innogy_price_pdf,
 )
 from app.invoice_import import InvoiceImportError, parse_supplier_invoice_pdf
+from app.energy_pdf import build_energy_offer_pdf
 
 
 def _money(value):
@@ -349,6 +350,19 @@ def render_energy_calculator(conn, username, role):
                             "Úspora za 12 měsíců (Kč)": st.column_config.NumberColumn(format="%.2f Kč"),
                             "Úspora za celé období 36 měsíců (Kč)": st.column_config.NumberColumn(format="%.2f Kč"),
                         },
+                    )
+                    pdf_data = build_energy_offer_pdf(conn, quote_id, result)
+                    safe_customer = "".join(
+                        char if char.isalnum() or char in "-_" else "_"
+                        for char in quote_label.split("·", 1)[0].strip()
+                    )
+                    st.download_button(
+                        "📄 Stáhnout grafickou nabídku v PDF",
+                        data=pdf_data,
+                        file_name=f"nabidka_energii_{safe_customer}.pdf",
+                        mime="application/pdf",
+                        type="primary",
+                        key=f"energy_pdf_{quote_id}",
                     )
                     for item in result["points"]:
                         y1, full = item["first_year"], item["full"]

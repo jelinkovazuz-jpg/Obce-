@@ -9,3 +9,5 @@ bcrypt
 beautifulsoup4
 python-dotenv
 pdfplumber
+reportlab
+font-roboto
