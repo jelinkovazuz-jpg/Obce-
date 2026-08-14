@@ -85,6 +85,54 @@ Stálý měsíční plat 130,00 Kč 1 560,00 Kč
         self.assertEqual(result["current_price_vt"], 1250)
         self.assertEqual(result["current_monthly_fee"], 130)
 
+    def test_current_mnd_electricity_commercial_rows_are_summed(self):
+        text = """MND Energie a.s. Moje MND
+Obec Přelovice
+Odběrné místo: EAN 859182400708742955
+Přelovice Parc. č. 29/3, Přelovice (přípojka Marina)
+Distribuční sazba: C02d Jistič: 3x25 A
+Fakturované období Stav Počáteční Koncový Spotřeba
+26. 10. 2024 - 28. 10. 2025 VT (T1) 366 kWh 608 kWh 242 kWh
+Vaše smlouva je na dobu neurčitou s tříměsíční výpovědní dobou.
+Obchodní část - ceník MND
+Období Jednotka Množství Za jednotku Celkem bez DPH
+Proud - Maloodběratelé VT 26. 10. 2024 - 31. 12. 2024 MWh 0,04600 3 864,46 Kč 177,77 Kč
+Proud - Maloodběratelé VT 01. 01. 2025 - 28. 10. 2025 MWh 0,19600 3 464,46 Kč 679,04 Kč
+Měsíční platba 26. 10. 2024 - 31. 12. 2024 měsíc 2,19400 63,64 Kč 139,63 Kč
+Měsíční platba 01. 01. 2025 - 28. 10. 2025 měsíc 9,90300 99,17 Kč 982,08 Kč
+Daň z elektřiny 26. 10. 2024 - 28. 10. 2025 MWh 0,24200 28,30 Kč 6,85 Kč
+Celková platba za obchodní část 1 985,37 Kč
+"""
+        result = _parse_invoice_text(text, "mnd-elektrina.pdf")
+        self.assertEqual(result["actual_consumption_mwh"], 0.242)
+        self.assertEqual(result["current_price_vt"], 3464.46)
+        self.assertEqual(result["current_monthly_fee"], 99.17)
+        self.assertEqual(result["address"], "Přelovice Parc. č. 29/3, Přelovice (přípojka Marina)")
+        self.assertEqual(result["contract_type"], "Doba neurčitá")
+
+    def test_current_mnd_gas_uses_stated_annual_consumption_and_band(self):
+        text = """MND Energie a.s. Moje MND
+Obec Přelovice
+Odběrné místo: EIC 27ZG500Z0069510I
+Přelovice 87, Přelovice (Budova OÚ)
+Fakturované období Počáteční stav Koncový stav Spotřeba
+27. 07. 2025 - 28. 07. 2026 831 m³ 1 878 m³ 1 047 m³
+Vaše smlouva je na dobu neurčitou s tříměsíční výpovědní dobou.
+Roční spotřeba pro přiřazení ceny = 11,81463 MWh
+Obchodní část - ceník MND
+Období Jednotka Množství Za jednotku Celkem bez DPH
+Plyn z první ruky s 6% prémií za věrnost 27. 07. 2025 - 28. 07. 2026 MWh 11,81754 1 327,27 Kč 15 685,07 Kč
+Měsíční platba 27. 07. 2025 - 28. 07. 2026 měsíc 12,06452 138,84 Kč 1 675,03 Kč
+Daň z plynu 27. 07. 2025 - 28. 07. 2026 MWh 11,81754 30,60 Kč 361,62 Kč
+Celková platba za obchodní část 17 721,72 Kč
+"""
+        result = _parse_invoice_text(text, "mnd-plyn.pdf")
+        self.assertEqual(result["actual_consumption_mwh"], 11.81754)
+        self.assertEqual(result["annual_consumption_mwh"], 11.81463)
+        self.assertEqual(result["rate_band"], "nad 7,56 do 63 MWh")
+        self.assertEqual(result["current_price_vt"], 1327.27)
+        self.assertEqual(result["current_monthly_fee"], 138.84)
+
     def test_expired_fixed_contract_uses_future_notice_period(self):
         conn = duckdb.connect(":memory:")
         init_energy_calculator(conn)

@@ -167,6 +167,94 @@ def _contract(text):
     return "Doba neurčitá", None
 
 
+def _mnd_details(text, commodity):
+    """Read the authoritative commercial section of current MND invoices.
+
+    Meter summaries can contain rollover/replacement values that are not billed
+    consumption.  Only rows before ``Celková platba za obchodní část`` are used.
+    """
+    section_match = re.search(
+        r"Obchodní část\s*-\s*ceník MND\s*\n(.*?)\nCelková platba za obchodní část",
+        text, re.IGNORECASE | re.DOTALL,
+    )
+    if not section_match:
+        return None
+    section = section_match.group(1)
+    date_range = (
+        r"\d{1,2}[.]\s*\d{1,2}[.]\s*\d{4}\s*-\s*"
+        r"\d{1,2}[.]\s*\d{1,2}[.]\s*\d{4}"
+    )
+    items = []
+    if commodity == "Elektřina":
+        pattern = (
+            rf"^(Proud\s*-\s*.+?)\s+(VT|NT)\s+{date_range}\s+MWh\s+"
+            r"([\d .\u00a0]+,\d+)\s+([\d .\u00a0]+,\d+)\s*Kč\s+"
+            r"[\d .\u00a0]+,\d+\s*Kč"
+        )
+        for match in re.finditer(pattern, section, re.IGNORECASE | re.MULTILINE):
+            items.append({
+                "product": match.group(1).strip(), "tariff": match.group(2).upper(),
+                "quantity": _number(match.group(3)), "price": _number(match.group(4)),
+            })
+    else:
+        pattern = (
+            rf"^(Plyn\s+.+?)\s+{date_range}\s+MWh\s+"
+            r"([\d .\u00a0]+,\d+)\s+([\d .\u00a0]+,\d+)\s*Kč\s+"
+            r"[\d .\u00a0]+,\d+\s*Kč"
+        )
+        for match in re.finditer(pattern, section, re.IGNORECASE | re.MULTILINE):
+            items.append({
+                "product": match.group(1).strip(), "tariff": "ALL",
+                "quantity": _number(match.group(2)), "price": _number(match.group(3)),
+            })
+    if not items:
+        return None
+
+    fee_matches = re.findall(
+        rf"Měsíční platba\s+{date_range}\s+měsíc\s+"
+        r"[\d .\u00a0]+,\d+\s+([\d .\u00a0]+,\d+)\s*Kč",
+        section, re.IGNORECASE,
+    )
+    quantities = {
+        tariff: sum(item["quantity"] for item in items if item["tariff"] == tariff)
+        for tariff in ("VT", "NT", "ALL")
+    }
+    total = sum(item["quantity"] for item in items)
+    prices = {
+        tariff: [item["price"] for item in items if item["tariff"] == tariff]
+        for tariff in ("VT", "NT", "ALL")
+    }
+    annual_match = re.search(
+        r"Roční spotřeba pro přiřazení ceny\s*=\s*([\d .\u00a0]+,\d+)\s*MWh",
+        text, re.IGNORECASE,
+    )
+    annual = _number(annual_match.group(1)) if annual_match else None
+    address_match = re.search(
+        r"Odběrné místo:\s*(?:EAN|EIC)\s+[A-Z0-9]+\s*\n([^\n]+)",
+        text, re.IGNORECASE,
+    )
+    return {
+        "actual_mwh": total,
+        "annual_mwh": annual,
+        "vt_share": 100.0 if total <= 0 else quantities["VT"] / total * 100,
+        "price_vt": (prices["VT"] or prices["ALL"])[-1],
+        "price_nt": prices["NT"][-1] if prices["NT"] else None,
+        "monthly_fee": _number(fee_matches[-1]) if fee_matches else 0.0,
+        "product": items[-1]["product"],
+        "address": address_match.group(1).strip() if address_match else "",
+    }
+
+
+def _gas_band(annual_mwh):
+    if annual_mwh <= 1.89:
+        return "do 1,89 MWh"
+    if annual_mwh <= 7.56:
+        return "nad 1,89 do 7,56 MWh"
+    if annual_mwh <= 63:
+        return "nad 7,56 do 63 MWh"
+    return "nad 63 MWh"
+
+
 def parse_supplier_invoice_pdf(pdf_bytes, file_name="faktura.pdf"):
     try:
         import pdfplumber
@@ -186,8 +274,11 @@ def _parse_invoice_text(text, file_name):
     supplier = _detect_supplier(text)
     commodity = _detect_commodity(text)
     billing_from, billing_to = _billing_period(text)
-    actual_mwh = _consumption_mwh(text, commodity)
-    price_vt, price_nt = _unit_prices(text, commodity)
+    mnd = _mnd_details(text, commodity) if supplier == "MND Energie a.s." else None
+    actual_mwh = mnd["actual_mwh"] if mnd else _consumption_mwh(text, commodity)
+    price_vt, price_nt = (
+        (mnd["price_vt"], mnd["price_nt"]) if mnd else _unit_prices(text, commodity)
+    )
     contract_type, contract_end = _contract(text)
     ean_eic = _identifier(text, commodity)
 
@@ -212,30 +303,43 @@ def _parse_invoice_text(text, file_name):
         warnings.append("Nepodařilo se přečíst adresu odběrného místa.")
     if price_vt == 0:
         warnings.append("Nepodařilo se bezpečně určit obchodní cenu za MWh.")
-    monthly_fee = _monthly_fee(text)
+    monthly_fee = mnd["monthly_fee"] if mnd else _monthly_fee(text)
     if monthly_fee == 0:
         warnings.append("Nepodařilo se bezpečně určit stálý obchodní měsíční plat.")
-    if contract_end is None:
+    if contract_end is None and not re.search(r"na dobu neurčitou", text, re.IGNORECASE):
         warnings.append("Faktura neuvádí jednoznačné datum konce smlouvy; smluvní údaje doplňte ručně.")
 
     days = (billing_to - billing_from).days + 1
     rate_band = rate_match.group(1).strip() if rate_match else "Všechny"
     if re.fullmatch(r"[CD]\d{2}[dD]", rate_band):
         rate_band = rate_band[:-1] + "d"
+    annual_mwh = annualize_consumption(
+        actual_mwh, billing_from, billing_to,
+        stated_annual=mnd["annual_mwh"] if mnd else None,
+    )
+    if commodity == "Plyn" and mnd:
+        rate_band = _gas_band(annual_mwh)
+    address = mnd["address"] if mnd and mnd["address"] else (
+        address_match.group(1).strip() if address_match else ""
+    )
+    product = mnd["product"] if mnd else (
+        product_match.group(1).strip() if product_match else ""
+    )
     return {
         "file_name": file_name, "supplier": supplier,
         "customer": customer_match.group(1).strip() if customer_match else "",
-        "address": address_match.group(1).strip() if address_match else "",
+        "address": address,
         "ean_eic": ean_eic, "commodity": commodity,
         "rate_band": rate_band,
         "billing_from": billing_from, "billing_to": billing_to,
         "actual_consumption_mwh": round(actual_mwh, 6),
-        "annual_consumption_mwh": round(annualize_consumption(actual_mwh, billing_from, billing_to), 6),
+        "annual_consumption_mwh": round(annual_mwh, 6),
         "consumption_source": f"Skutečná spotřeba za {days} dní",
-        "vt_share": 100.0, "current_price_vt": price_vt,
+        "vt_share": round(mnd["vt_share"], 4) if mnd else 100.0,
+        "current_price_vt": price_vt,
         "current_price_nt": price_nt, "current_monthly_fee": monthly_fee,
         "contract_type": contract_type, "contract_end_date": contract_end,
         "automatic_extension": bool(re.search(r"automatick(?:é|ému) prodloužení", text, re.IGNORECASE)),
-        "current_product": product_match.group(1).strip() if product_match else "",
+        "current_product": product,
         "warnings": warnings,
     }
