@@ -214,10 +214,12 @@ def render_energy_calculator(conn, username, role):
                 "Každá faktura se načte jako samostatné odběrné místo a před uložením "
                 "můžete všechny údaje upravit v tabulce."
             )
+            nonce_key = f"energy_invoice_nonce_{quote_id}"
+            upload_nonce = int(st.session_state.get(nonce_key, 0))
             invoice_files = st.file_uploader(
                 "Přetáhněte sem faktury současných dodavatelů",
                 type=["pdf"], accept_multiple_files=True,
-                key=f"energy_invoices_{quote_id}",
+                key=f"energy_invoices_{quote_id}_{upload_nonce}",
                 help="Lze označit více PDF současně. Jedno PDF představuje jedno odběrné místo.",
             )
             if invoice_files:
@@ -247,7 +249,7 @@ def render_energy_calculator(conn, username, role):
                         invoice_frame,
                         use_container_width=True,
                         hide_index=True,
-                        key=f"energy_invoice_table_{quote_id}",
+                        key=f"energy_invoice_table_{quote_id}_{upload_nonce}",
                         disabled=["Soubor", "Faktura od", "Faktura do", "Zdroj spotřeby", "Upozornění"],
                         column_config={
                             "Komodita": st.column_config.SelectboxColumn(options=COMMODITIES, required=True),
@@ -268,11 +270,11 @@ def render_energy_calculator(conn, username, role):
                     )
                     confirmed = st.checkbox(
                         f"Zkontrolovala jsem údaje všech {len(edited_invoices)} odběrných míst",
-                        key=f"confirm_invoice_batch_{quote_id}",
+                        key=f"confirm_invoice_batch_{quote_id}_{upload_nonce}",
                     )
                     if st.button(
                         f"Uložit všech {len(edited_invoices)} odběrných míst a spočítat úsporu",
-                        type="primary", key=f"save_invoice_batch_{quote_id}",
+                        type="primary", key=f"save_invoice_batch_{quote_id}_{upload_nonce}",
                     ):
                         try:
                             if not confirmed:
@@ -285,7 +287,8 @@ def render_energy_calculator(conn, username, role):
                                     raise EnergyCalculationError(
                                         f"U souboru {row['Soubor']} chybí adresa nebo EAN/EIC."
                                     )
-                                if float(row["Cena VT / MWh"] or 0) <= 0:
+                                current_price = row["Cena VT / MWh"]
+                                if pd.isna(current_price) or float(current_price) <= 0:
                                     raise EnergyCalculationError(
                                         f"U souboru {row['Soubor']} doplňte obchodní cenu za MWh."
                                     )
@@ -322,8 +325,9 @@ def render_energy_calculator(conn, username, role):
                             st.error(str(exc))
                         else:
                             st.success(f"Uloženo {len(edited_invoices)} odběrných míst.")
-                            st.session_state.pop(f"energy_invoices_{quote_id}", None)
-                            st.session_state.pop(f"energy_invoice_table_{quote_id}", None)
+                            # Never mutate the state of widgets already rendered
+                            # in this run. A fresh key safely clears the batch.
+                            st.session_state[nonce_key] = upload_nonce + 1
                             st.rerun()
 
             try:
