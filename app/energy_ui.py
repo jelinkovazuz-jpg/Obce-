@@ -42,7 +42,7 @@ def _price_list_options(conn, product_id, signing_date=None):
     """, [product_id]).fetchall()
     if signing_date:
         matching = [r for r in rows if r[2] <= signing_date and (r[3] is None or r[3] >= signing_date)]
-        return matching or rows
+        return matching
     return rows
 
 

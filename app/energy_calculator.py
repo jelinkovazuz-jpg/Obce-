@@ -148,7 +148,7 @@ def derive_supply_start(contract_type, signing_date, contract_end_date=None,
     if contract_type == "Doba určitá":
         if not contract_end_date:
             raise EnergyCalculationError("U smlouvy na dobu určitou vyplňte datum konce.")
-        return first_of_next_month(contract_end_date)
+        return contract_end_date + timedelta(days=1)
     submitted = notice_submitted_date or signing_date
     if not submitted:
         raise EnergyCalculationError("Vyplňte datum podání výpovědi nebo podpisu nabídky.")
@@ -162,7 +162,20 @@ def _as_decimal(value):
     return Decimal(str(value or 0))
 
 
-def _periods(conn, price_list_id, rate_band, component, start, end):
+def annualize_consumption(consumption, period_from, period_to, stated_annual=None):
+    """Return annual MWh, preferring an annual value stated on the invoice."""
+    if stated_annual is not None:
+        return float(stated_annual)
+    if not period_from or not period_to or period_to < period_from:
+        raise EnergyCalculationError("Pro anualizaci chybí platné fakturační období.")
+    days = (period_to - period_from).days + 1
+    if 350 <= days <= 380:
+        return float(consumption)
+    return round(float(consumption) / days * 365, 6)
+
+
+def _price_segments(conn, price_list_id, rate_band, component, start, end):
+    """Resolve an interval into non-overlapping prices; exact rows beat generic ones."""
     rows = conn.execute("""
         SELECT valid_from,valid_to,unit_price,monthly_fee,rate_band,component
         FROM energy_price_periods
@@ -171,15 +184,32 @@ def _periods(conn, price_list_id, rate_band, component, start, end):
           AND component IN (?, 'Jednotná')
           AND valid_from < ?
           AND coalesce(valid_to, DATE '9999-12-31') >= ?
-        ORDER BY CASE WHEN rate_band=? THEN 0 ELSE 1 END,
-                 CASE WHEN component=? THEN 0 ELSE 1 END, valid_from
-    """, [price_list_id, rate_band, component, end, start, rate_band, component]).fetchall()
-    # Exact rows win over generic rows for the same date range.
-    result = []
-    for row in rows:
-        if not any(r[0] == row[0] and r[1] == row[1] for r in result):
-            result.append(row)
-    return sorted(result, key=lambda row: row[0])
+    """, [price_list_id, rate_band, component, end, start]).fetchall()
+    boundaries = {start, end}
+    for valid_from, valid_to, *_ in rows:
+        boundaries.add(max(start, valid_from))
+        boundaries.add(min(end, valid_to + timedelta(days=1) if valid_to else end))
+    boundaries = sorted(boundaries)
+    segments = []
+    for seg_start, seg_end in zip(boundaries, boundaries[1:]):
+        if seg_start >= seg_end:
+            continue
+        candidates = [
+            row for row in rows
+            if row[0] <= seg_start and (row[1] is None or row[1] >= seg_end - timedelta(days=1))
+        ]
+        if not candidates:
+            raise EnergyCalculationError(
+                f"Ceník nepokrývá období {seg_start:%d.%m.%Y}–"
+                f"{seg_end - timedelta(days=1):%d.%m.%Y} pro {rate_band}, {component}."
+            )
+        candidates.sort(
+            key=lambda row: (row[4] == rate_band, row[5] == component, row[0]),
+            reverse=True,
+        )
+        selected = candidates[0]
+        segments.append((seg_start, seg_end, selected[2], selected[3]))
+    return segments
 
 
 def calculate_supply_point(conn, point_id, months=36):
@@ -212,41 +242,37 @@ def calculate_supply_point(conn, point_id, months=36):
     innogy_fixed = current_fixed = Decimal("0")
     period_totals = {}
     annual_dec = _as_decimal(annual)
+    evaluation_end = add_months(start, months)
+    current_fixed = _as_decimal(current_fee) * months
+    for component, share, current_price in components:
+        component_annual = annual_dec * share
+        current_energy += component_annual * _as_decimal(months) / Decimal("12") * current_price
+        segments = _price_segments(
+            conn, price_list_id, rate, component, start, evaluation_end
+        )
+        for seg_start, seg_end, unit_price, monthly_fee in segments:
+            days = (seg_end - seg_start).days
+            consumption = component_annual * Decimal(days) / Decimal("365")
+            cost = consumption * _as_decimal(unit_price)
+            innogy_energy += cost
+            period_key = (seg_start, seg_end - timedelta(days=1), component,
+                          float(unit_price), float(monthly_fee))
+            period_totals[period_key] = period_totals.get(period_key, Decimal("0")) + cost
+            lines.append({
+                "from": seg_start, "to": seg_end - timedelta(days=1),
+                "days": days, "component": component,
+                "consumption_mwh": float(consumption), "unit_price": float(unit_price),
+                "energy_cost": float(cost),
+            })
+
+    # The commercial standing charge is paid exactly once per service month.
+    fee_component = components[0][0]
     for month_number in range(months):
-        month_start = add_months(start, month_number)
-        month_end = add_months(start, month_number + 1)
-        month_days = Decimal((month_end - month_start).days)
-        current_fixed += _as_decimal(current_fee)
-        fee_for_month = None
-        for component, share, current_price in components:
-            monthly_consumption = annual_dec * share / Decimal("12")
-            current_energy += monthly_consumption * current_price
-            periods = _periods(conn, price_list_id, rate, component, month_start, month_end)
-            covered_days = 0
-            for valid_from, valid_to, unit_price, monthly_fee, used_rate, used_component in periods:
-                seg_start = max(month_start, valid_from)
-                seg_end = min(month_end, (valid_to + timedelta(days=1)) if valid_to else month_end)
-                if seg_start >= seg_end:
-                    continue
-                days = (seg_end - seg_start).days
-                covered_days += days
-                consumption = monthly_consumption * Decimal(days) / month_days
-                cost = consumption * _as_decimal(unit_price)
-                innogy_energy += cost
-                fee_for_month = _as_decimal(monthly_fee) if fee_for_month is None else fee_for_month
-                period_key = (valid_from, valid_to, component, float(unit_price), float(monthly_fee))
-                period_totals[period_key] = period_totals.get(period_key, Decimal("0")) + cost
-                lines.append({
-                    "month": month_number + 1, "from": seg_start, "to": seg_end - timedelta(days=1),
-                    "component": component, "consumption_mwh": float(consumption),
-                    "unit_price": float(unit_price), "energy_cost": float(cost),
-                })
-            if covered_days != int(month_days):
-                raise EnergyCalculationError(
-                    f"Ceník nepokrývá celé období {month_start:%d.%m.%Y}–{month_end - timedelta(days=1):%d.%m.%Y} "
-                    f"pro {rate}, {component}."
-                )
-        innogy_fixed += fee_for_month or Decimal("0")
+        fee_date = add_months(start, month_number)
+        fee_segment = _price_segments(
+            conn, price_list_id, rate, fee_component, fee_date, fee_date + timedelta(days=1)
+        )[0]
+        innogy_fixed += _as_decimal(fee_segment[3])
 
     def money(value):
         return round(float(value), 2)
@@ -292,6 +318,16 @@ def calculate_quote(conn, quote_id):
 
 def create_quote(conn, kod_obce, customer_name, product_id, price_list_id,
                  signing_date, title, username):
+    valid_list = conn.execute("""
+        SELECT 1 FROM energy_price_lists
+        WHERE id=? AND product_id=? AND active
+          AND signing_valid_from <= ?
+          AND coalesce(signing_valid_to, DATE '9999-12-31') >= ?
+    """, [price_list_id, product_id, signing_date, signing_date]).fetchone()
+    if not valid_list:
+        raise EnergyCalculationError(
+            "Vybraný akční ceník neplatí pro datum podpisu nabídky."
+        )
     quote_id = str(uuid4())
     conn.execute("""
         INSERT INTO energy_quotes
@@ -308,6 +344,19 @@ def add_supply_point(conn, quote_id, address, ean_eic, commodity, rate_band,
                      contract_type, contract_end_date, notice_months,
                      notice_submitted_date, supply_start_date, product_id=None,
                      price_list_id=None):
+    if product_id and price_list_id:
+        valid_selection = conn.execute("""
+            SELECT 1
+            FROM energy_quotes q, energy_products p, energy_price_lists pl
+            WHERE q.id=? AND p.id=? AND pl.id=? AND pl.product_id=p.id
+              AND p.commodity=? AND pl.active
+              AND pl.signing_valid_from <= q.signing_date
+              AND coalesce(pl.signing_valid_to, DATE '9999-12-31') >= q.signing_date
+        """, [quote_id, product_id, price_list_id, commodity]).fetchone()
+        if not valid_selection:
+            raise EnergyCalculationError(
+                "Produkt nebo akční ceník neodpovídá komoditě a datu podpisu."
+            )
     point_id = str(uuid4())
     conn.execute("""
         INSERT INTO energy_supply_points (
