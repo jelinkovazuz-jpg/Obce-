@@ -1,5 +1,4 @@
 from datetime import date
-from uuid import uuid4
 
 import pandas as pd
 import streamlit as st
@@ -12,7 +11,11 @@ from app.energy_calculator import (
     calculate_quote,
     create_quote,
     derive_supply_start,
-    save_price_period,
+)
+from app.energy_price_import import (
+    EnergyPriceImportError,
+    import_monthly_price_list,
+    template_csv,
 )
 
 
@@ -227,81 +230,62 @@ def render_energy_calculator(conn, username, role):
         if role != "admin":
             st.info("Ceníky může upravovat pouze administrátor.")
         else:
-            st.warning("Změna ceníku se okamžitě projeví v přepočtu uložených nabídek.")
-            products = _product_options(conn)
-            product_labels = {label: product_id for product_id, label, _, _ in products}
-            selected_product_label = st.selectbox("Produkt ceníku", product_labels, key="admin_product")
-            selected_product = product_labels[selected_product_label]
-            lists = _price_list_options(conn, selected_product)
-            list_labels = {name: list_id for list_id, name, _, _ in lists}
-            selected_list_label = st.selectbox("Akční ceník", list_labels, key="admin_list") if lists else None
-            if selected_list_label:
-                list_id = list_labels[selected_list_label]
-                periods = conn.execute("""
-                    SELECT id AS "ID",rate_band AS "Sazba / pásmo",component AS "VT / NT",
-                           valid_from AS "Platí od",valid_to AS "Platí do",
-                           unit_price AS "Kč/MWh",monthly_fee AS "Kč/měsíc"
-                    FROM energy_price_periods WHERE price_list_id=?
-                    ORDER BY rate_band,component,valid_from
-                """, [list_id]).fetchdf()
-                edited_periods = st.data_editor(
-                    periods, hide_index=True, width="stretch", key="energy_period_editor",
-                    disabled=["ID"], column_config={"ID": None}, num_rows="fixed",
-                )
-                if st.button("Uložit změny ceníku", type="primary"):
-                    try:
-                        for _, row in edited_periods.iterrows():
-                            save_price_period(
-                                conn, list_id, str(row["Sazba / pásmo"]),
-                                str(row["VT / NT"]), pd.Timestamp(row["Platí od"]).date(),
-                                None if pd.isna(row["Platí do"]) else pd.Timestamp(row["Platí do"]).date(),
-                                float(row["Kč/MWh"]), float(row["Kč/měsíc"]), str(row["ID"]),
-                            )
-                    except Exception as exc:
-                        st.error(str(exc))
-                    else:
-                        st.success("Změny ceníku byly uloženy.")
-                        st.rerun()
-                with st.form("energy_add_period", clear_on_submit=True):
-                    rate = st.text_input("Sazba nebo pásmo", value="Všechny")
-                    component = st.selectbox("Složka", ["Jednotná", "VT", "NT"])
-                    valid_from = st.date_input("Cena platí od")
-                    has_end = st.checkbox("Cena má datum konce", value=True)
-                    valid_to = st.date_input("Cena platí do") if has_end else None
-                    unit_price = st.number_input("Cena bez DPH (Kč/MWh)", min_value=0.0, step=0.1)
-                    fee = st.number_input("Stálý plat bez DPH (Kč/měsíc)", min_value=0.0, step=1.0)
-                    if st.form_submit_button("Přidat cenové období"):
-                        try:
-                            save_price_period(conn, list_id, rate, component, valid_from, valid_to, unit_price, fee)
-                        except Exception as exc:
-                            st.error(str(exc))
-                        else:
-                            st.success("Cenové období bylo přidáno.")
-                            st.rerun()
+            st.markdown("#### Aktuální měsíční akční ceník")
+            current = conn.execute("""
+                SELECT pl.name,pl.signing_valid_from,pl.signing_valid_to,
+                       count(pp.id),pl.note
+                FROM energy_price_lists pl
+                LEFT JOIN energy_price_periods pp ON pp.price_list_id=pl.id
+                WHERE pl.active
+                GROUP BY pl.id,pl.name,pl.signing_valid_from,pl.signing_valid_to,pl.note
+                ORDER BY pl.signing_valid_from DESC,pl.name
+            """).fetchdf()
+            if current.empty:
+                st.info("Zatím není nahraný žádný aktuální ceník.")
+            else:
+                current.columns = ["Ceník", "Podpis od", "Podpis do", "Cenových řádků", "Zdroj"]
+                st.dataframe(current, hide_index=True, width="stretch")
 
-            st.markdown("#### Přidat produkt nebo akční ceník")
-            product_col, list_col = st.columns(2)
-            with product_col.form("energy_add_product", clear_on_submit=True):
-                supplier = st.text_input("Dodavatel", value="innogy")
-                name = st.text_input("Název produktu")
-                commodity = st.selectbox("Komodita", COMMODITIES, key="admin_new_commodity")
-                fixation = st.number_input("Délka fixace (měsíce)", min_value=1, value=36)
-                if st.form_submit_button("Přidat produkt"):
-                    conn.execute("""
-                        INSERT INTO energy_products (id,supplier,name,commodity,fixation_months)
-                        VALUES (?,?,?,?,?)
-                    """, [str(uuid4()), supplier.strip(), name.strip(), commodity, fixation])
+            st.markdown("#### Nahrát nový ceník")
+            st.caption(
+                "Nahrajte jeden soubor pro daný měsíc. Nový ceník se nastaví jako aktuální; "
+                "starší nabídky si ponechají původní ceny."
+            )
+            action_month = st.date_input(
+                "Měsíc, ve kterém lze nabídku podepsat",
+                value=date.today().replace(day=1), key="energy_action_month",
+            )
+            uploaded_price = st.file_uploader(
+                "Akční ceník", type=["xlsx", "csv"], key="energy_price_upload"
+            )
+            st.download_button(
+                "Stáhnout jednoduchou šablonu ceníku",
+                template_csv(), "sablona_akcniho_ceniku.csv", "text/csv",
+            )
+            if uploaded_price is not None and st.button(
+                "Nahrát a aktivovat ceník", type="primary"
+            ):
+                try:
+                    imported = import_monthly_price_list(
+                        conn, uploaded_price, uploaded_price.name, action_month, username
+                    )
+                except EnergyPriceImportError as exc:
+                    st.error(str(exc))
+                except Exception as exc:
+                    st.error(f"Ceník se nepodařilo uložit: {exc}")
+                else:
+                    st.success(
+                        f"Aktivováno: {imported['lists']} ceníků a "
+                        f"{imported['rows']} cenových řádků pro {imported['month']:%m/%Y}."
+                    )
                     st.rerun()
-            with list_col.form("energy_add_list", clear_on_submit=True):
-                new_list_name = st.text_input("Název akčního ceníku")
-                signing_from = st.date_input("Podpis platí od")
-                signing_has_end = st.checkbox("Podpis má datum konce", value=True)
-                signing_to = st.date_input("Podpis platí do") if signing_has_end else None
-                note = st.text_area("Poznámka")
-                if st.form_submit_button("Přidat ceník"):
-                    conn.execute("""
-                        INSERT INTO energy_price_lists
-                            (id,product_id,name,signing_valid_from,signing_valid_to,note)
-                        VALUES (?,?,?,?,?,?)
-                    """, [str(uuid4()), selected_product, new_list_name.strip(), signing_from, signing_to, note])
-                    st.rerun()
+
+            history = conn.execute("""
+                SELECT action_month AS "Měsíc",file_name AS "Soubor",
+                       row_count AS "Řádků",list_count AS "Ceníků",
+                       imported_at AS "Nahráno",imported_by AS "Uživatel"
+                FROM energy_price_imports ORDER BY imported_at DESC LIMIT 24
+            """).fetchdf()
+            if not history.empty:
+                st.markdown("#### Historie nahrání")
+                st.dataframe(history, hide_index=True, width="stretch")

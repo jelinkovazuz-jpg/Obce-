@@ -74,6 +74,15 @@ def init_energy_calculator(conn):
     """)
     conn.execute("ALTER TABLE energy_supply_points ADD COLUMN IF NOT EXISTS product_id VARCHAR")
     conn.execute("ALTER TABLE energy_supply_points ADD COLUMN IF NOT EXISTS price_list_id VARCHAR")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS energy_price_imports (
+            id VARCHAR PRIMARY KEY, file_name VARCHAR NOT NULL,
+            action_month DATE NOT NULL, imported_by VARCHAR,
+            imported_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            row_count INTEGER NOT NULL, list_count INTEGER NOT NULL
+        )
+    """)
+    conn.execute("ALTER TABLE energy_price_lists ADD COLUMN IF NOT EXISTS import_id VARCHAR")
     _seed_optimal_36(conn)
 
 

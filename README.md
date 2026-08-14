@@ -29,8 +29,10 @@ záporných výsledků. Výpočty zahrnují pouze obchodní část ceny a stál�
 plat, vždy bez DPH.
 
 V administraci jsou předvyplněné vzorové ceny Optimal 36 z roku 2026. Před
-odesláním skutečné nabídky je ověřte proti platnému ceníku. Nové měsíční akce se
-zakládají jako nový akční ceník; jednotlivé ceny lze průběžně přidávat a měnit.
+odesláním skutečné nabídky je ověřte proti platnému ceníku. Nová měsíční akce se
+nahraje jedním souborem Excel nebo CSV podle šablony dostupné přímo v aplikaci.
+Nový ceník se aktivuje automaticky; starší verze zůstane interně zachovaná pouze
+kvůli již vytvořeným nabídkám.
 Spotřeba se mezi cenová období rozděluje podle přesného počtu kalendářních dní
 poměrem `roční spotřeba × počet dní / 365`; stálý plat se účtuje samostatně za
 přesně 12 nebo 36 měsíců.
