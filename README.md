@@ -15,7 +15,22 @@ obchodních vztahů s obcemi.
 - automatická evidence odpovědí a filtr obcí bez odpovědi po 7 dnech,
 - automatická synchronizace e-mailové komunikace každých 10 minut,
 - import smluv z Innogy iSales Excelu a párování k obcím podle IČO,
+- kalkulace nabídek elektřiny a plynu pro více odběrných míst,
+- výpočet úspory za 12 a 36 měsíců přes více cenových období,
+- podpora VT/NT, záporných úspor a odvození zahájení z výpovědní doby,
+- administrace produktů, akčních ceníků a jejich časových cenových úseků,
 - přihlášení uživatelů a role.
+
+## Kalkulačka energií
+
+Kalkulačka je v záložce **Kalkulace**. Nejprve založte nabídku zákazníka,
+potom k ní přidávejte odběrná místa. Souhrn započítává všechna místa včetně
+záporných výsledků. Výpočty zahrnují pouze obchodní část ceny a stálý obchodní
+plat, vždy bez DPH.
+
+V administraci jsou předvyplněné vzorové ceny Optimal 36 z roku 2026. Před
+odesláním skutečné nabídky je ověřte proti platnému ceníku. Nové měsíční akce se
+zakládají jako nový akční ceník; jednotlivé ceny lze průběžně přidávat a měnit.
 
 ## Spuštění
 

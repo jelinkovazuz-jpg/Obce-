@@ -40,6 +40,8 @@ from app.email_sender import (
     send_individual_messages,
 )
 from app.innogy_import import InnogyImportError, import_contracts, init_innogy
+from app.energy_calculator import init_energy_calculator
+from app.energy_ui import render_energy_calculator
 
 
 load_dotenv()
@@ -113,6 +115,7 @@ init_crm(conn)
 init_email_sync(conn)
 init_email_sender(conn)
 init_innogy(conn)
+init_energy_calculator(conn)
 
 st.markdown(
     """
@@ -261,8 +264,8 @@ with st.sidebar:
 st.title("🏛️ CRM obcí ČR")
 st.caption("Vyhledávání obcí, obchodní pipeline, aktivity a úkoly")
 
-tab_search, tab_pipeline, tab_detail, tab_tasks, tab_email, tab_innogy = st.tabs(
-    ["🔎 Vyhledávání", "📊 Pipeline", "🏢 Detail obce", "✅ Úkoly", "📧 E-mail", "⚡ Innogy"]
+tab_search, tab_pipeline, tab_detail, tab_tasks, tab_email, tab_innogy, tab_energy = st.tabs(
+    ["🔎 Vyhledávání", "📊 Pipeline", "🏢 Detail obce", "✅ Úkoly", "📧 E-mail", "⚡ Innogy", "💡 Kalkulace"]
 )
 
 
@@ -826,5 +829,11 @@ with tab_innogy:
         st.caption("Všechny importované obecní smlouvy jsou spárované.")
     else:
         st.dataframe(unmatched_contracts, hide_index=True, width="stretch")
+
+
+with tab_energy:
+    render_energy_calculator(
+        conn, st.session_state.username, st.session_state.role
+    )
 
 conn.close()
