@@ -216,6 +216,7 @@ def quick_municipality_card(kod_obce):
             st.toast("Karta obce byla uložena.", icon="✅")
             if "obec" in st.query_params:
                 del st.query_params["obec"]
+            st.session_state.pop("pending_municipality_card", None)
             card_conn.close()
             st.rerun(scope="app")
 
@@ -276,6 +277,7 @@ def quick_municipality_card(kod_obce):
     if st.button("Zavřít kartu", key=f"close_quick_{kod_obce}"):
         if "obec" in st.query_params:
             del st.query_params["obec"]
+        st.session_state.pop("pending_municipality_card", None)
         card_conn.close()
         st.rerun(scope="app")
     card_conn.close()
@@ -469,12 +471,21 @@ with tab_search:
         if changes:
             st.toast(f"Změny byly automaticky uloženy ({changes}×).", icon="✅")
             st.rerun()
+        # Municipality links use a query parameter only as a one-shot event.
+        # Consume it before opening the dialog. Otherwise every unrelated
+        # Streamlit rerun sees the same URL and reopens a card the user closed.
         requested_code = st.query_params.get("obec")
-        if requested_code:
+        if requested_code is not None:
             try:
-                quick_municipality_card(int(requested_code))
+                st.session_state["pending_municipality_card"] = int(requested_code)
             except (TypeError, ValueError):
-                del st.query_params["obec"]
+                st.session_state.pop("pending_municipality_card", None)
+            finally:
+                if "obec" in st.query_params:
+                    del st.query_params["obec"]
+        pending_card = st.session_state.pop("pending_municipality_card", None)
+        if pending_card is not None:
+            quick_municipality_card(pending_card)
         buffer = BytesIO()
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
             df.to_excel(writer, index=False)
