@@ -214,9 +214,6 @@ def quick_municipality_card(kod_obce):
                 next_contact if has_next else None, note,
             )
             st.toast("Karta obce byla uložena.", icon="✅")
-            if "obec" in st.query_params:
-                del st.query_params["obec"]
-            st.session_state.pop("pending_municipality_card", None)
             card_conn.close()
             st.rerun(scope="app")
 
@@ -275,9 +272,6 @@ def quick_municipality_card(kod_obce):
         st.caption("K této obci zatím nejsou spárované smlouvy Innogy.")
     render_municipality_documents(card_conn, kod_obce, "quick_document")
     if st.button("Zavřít kartu", key=f"close_quick_{kod_obce}"):
-        if "obec" in st.query_params:
-            del st.query_params["obec"]
-        st.session_state.pop("pending_municipality_card", None)
         card_conn.close()
         st.rerun(scope="app")
     card_conn.close()
@@ -337,8 +331,6 @@ with tab_search:
 
     if "search_context" in st.session_state:
         latitude, longitude, active_radius = st.session_state.search_context
-        current_url = st.context.url or "http://localhost:8501"
-        app_url = current_url.split("?", 1)[0].split("#", 1)[0]
         rows = conn.execute(
             """
             SELECT o.kod_obce, o.nazev, o.okres, o.kraj, o.latitude, o.longitude,
@@ -376,8 +368,8 @@ with tab_search:
                 response_state, waiting_days = response_status(last_sent, last_received)
                 results.append(
                     {
-                        "Vybrat": False, "Kód": row[0],
-                        "Obec": f"{app_url}?obec={row[0]}#{row[1]}",
+                        "Karta": False, "Vybrat": False, "Kód": row[0],
+                        "Obec": row[1],
                         "_Název obce": row[1],
                         "Okres": row[2] or "",
                         "Kraj": row[3] or "", "Vzdálenost (km)": round(km, 2),
@@ -389,7 +381,7 @@ with tab_search:
                     }
                 )
 
-        columns = ["Vybrat", "Kód", "Obec", "_Název obce", "Okres", "Kraj", "Vzdálenost (km)",
+        columns = ["Karta", "Vybrat", "Kód", "Obec", "_Název obce", "Okres", "Kraj", "Vzdálenost (km)",
                    "Stav CRM", "Osloveno", "Odpověď", "Čekáme dní", "Poslední odpověď",
                    "Obchodník", "Web", "E-mail", "Telefon", "IČO"]
         df = pd.DataFrame(results, columns=columns).sort_values("Vzdálenost (km)")
@@ -416,9 +408,12 @@ with tab_search:
             column_config={
                 "_Název obce": None,
                 "Web": st.column_config.LinkColumn("Web"),
-                "Obec": st.column_config.LinkColumn(
+                "Obec": st.column_config.TextColumn(
                     "Obec", pinned=True, disabled=True,
-                    help="Kliknutím otevřete kartu obce", display_text="#(.*)$"
+                ),
+                "Karta": st.column_config.CheckboxColumn(
+                    "Otevřít kartu", pinned=True,
+                    help="Zaškrtnutím otevřete kartu v tomto okně bez nového přihlášení."
                 ),
                 "Vybrat": st.column_config.CheckboxColumn(
                     "Vybrat", help="Zařadit obec do rozesílky"
@@ -471,21 +466,16 @@ with tab_search:
         if changes:
             st.toast(f"Změny byly automaticky uloženy ({changes}×).", icon="✅")
             st.rerun()
-        # Municipality links use a query parameter only as a one-shot event.
-        # Consume it before opening the dialog. Otherwise every unrelated
-        # Streamlit rerun sees the same URL and reopens a card the user closed.
-        requested_code = st.query_params.get("obec")
-        if requested_code is not None:
-            try:
-                st.session_state["pending_municipality_card"] = int(requested_code)
-            except (TypeError, ValueError):
-                st.session_state.pop("pending_municipality_card", None)
-            finally:
-                if "obec" in st.query_params:
-                    del st.query_params["obec"]
-        pending_card = st.session_state.pop("pending_municipality_card", None)
-        if pending_card is not None:
-            quick_municipality_card(pending_card)
+        # A rising checkbox edge opens the dialog in the current Streamlit
+        # session. Keeping the checked value does not reopen it on later reruns.
+        current_card_codes = {
+            int(value) for value in edited_df.loc[edited_df["Karta"], "Kód"].tolist()
+        }
+        previous_card_codes = set(st.session_state.get("open_card_checkboxes", []))
+        newly_opened = current_card_codes - previous_card_codes
+        st.session_state.open_card_checkboxes = sorted(current_card_codes)
+        if newly_opened:
+            quick_municipality_card(sorted(newly_opened)[0])
         buffer = BytesIO()
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
             df.to_excel(writer, index=False)
