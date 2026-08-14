@@ -8,3 +8,4 @@ rapidfuzz
 bcrypt
 beautifulsoup4
 python-dotenv
+pdfplumber

@@ -14,8 +14,8 @@ from app.energy_calculator import (
 )
 from app.energy_price_import import (
     EnergyPriceImportError,
-    import_monthly_price_list,
-    template_csv,
+    import_parsed_pdf,
+    parse_innogy_price_pdf,
 )
 
 
@@ -248,35 +248,57 @@ def render_energy_calculator(conn, username, role):
 
             st.markdown("#### Nahrát nový ceník")
             st.caption(
-                "Nahrajte jeden soubor pro daný měsíc. Nový ceník se nastaví jako aktuální; "
-                "starší nabídky si ponechají původní ceny."
+                "Nahrajte původní PDF Innogy pro elektřinu, plyn nebo obě komodity. "
+                "Platnost akce i všechny ceny aplikace přečte přímo z dokumentu."
             )
-            action_month = st.date_input(
-                "Měsíc, ve kterém lze nabídku podepsat",
-                value=date.today().replace(day=1), key="energy_action_month",
+            uploaded_prices = st.file_uploader(
+                "Akční ceník PDF", type=["pdf"], accept_multiple_files=True,
+                key="energy_price_upload",
             )
-            uploaded_price = st.file_uploader(
-                "Akční ceník", type=["xlsx", "csv"], key="energy_price_upload"
-            )
-            st.download_button(
-                "Stáhnout jednoduchou šablonu ceníku",
-                template_csv(), "sablona_akcniho_ceniku.csv", "text/csv",
-            )
-            if uploaded_price is not None and st.button(
-                "Nahrát a aktivovat ceník", type="primary"
-            ):
+            parsed_files = []
+            if uploaded_prices:
                 try:
-                    imported = import_monthly_price_list(
-                        conn, uploaded_price, uploaded_price.name, action_month, username
-                    )
+                    parsed_files = [
+                        parse_innogy_price_pdf(upload.getvalue(), upload.name)
+                        for upload in uploaded_prices
+                    ]
+                    unique_keys = {
+                        (item["commodity"], item["signing_from"], item["signing_to"])
+                        for item in parsed_files
+                    }
+                    if len(unique_keys) != len(parsed_files):
+                        raise EnergyPriceImportError(
+                            "Pro jednu komoditu a měsíc nahrajte pouze jeden PDF ceník."
+                        )
                 except EnergyPriceImportError as exc:
                     st.error(str(exc))
+                else:
+                    st.markdown("##### Kontrola rozpoznaných cen")
+                    for parsed in parsed_files:
+                        st.write(
+                            f"**{parsed['commodity']} · {parsed['product']}** — podpis "
+                            f"{parsed['signing_from']:%d.%m.%Y} až {parsed['signing_to']:%d.%m.%Y}"
+                        )
+                        preview = pd.DataFrame(parsed["rows"]).rename(columns={
+                            "rate": "Sazba / pásmo", "component": "Složka",
+                            "valid_from": "Cena od", "valid_to": "Cena do",
+                            "unit_price": "Kč/MWh bez DPH",
+                            "monthly_fee": "Kč/měsíc bez DPH",
+                        })
+                        st.dataframe(
+                            preview[["Sazba / pásmo", "Složka", "Cena od", "Cena do",
+                                     "Kč/MWh bez DPH", "Kč/měsíc bez DPH"]],
+                            hide_index=True, width="stretch",
+                        )
+            if parsed_files and st.button("Potvrdit a aktivovat ceník", type="primary"):
+                try:
+                    results = [import_parsed_pdf(conn, parsed, username) for parsed in parsed_files]
                 except Exception as exc:
                     st.error(f"Ceník se nepodařilo uložit: {exc}")
                 else:
                     st.success(
-                        f"Aktivováno: {imported['lists']} ceníků a "
-                        f"{imported['rows']} cenových řádků pro {imported['month']:%m/%Y}."
+                        f"Aktivováno {len(results)} PDF a "
+                        f"{sum(result['rows'] for result in results)} cenových řádků."
                     )
                     st.rerun()
 
