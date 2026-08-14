@@ -69,11 +69,11 @@ def render_energy_calculator(conn, username, role):
         with st.form("energy_new_quote"):
             municipality_label = st.selectbox("Zákazník / obec", municipality_labels)
             title = st.text_input("Název nabídky", placeholder="Např. Nabídka energií 2026")
-            signing_date = st.date_input("Datum podpisu nabídky", value=date.today())
+            signing_date = st.date_input("Datum vypracování nabídky", value=date.today())
             product_label = st.selectbox("Výchozí produkt", product_labels)
             lists = _price_list_options(conn, product_labels[product_label], signing_date)
             list_labels = {
-                f"{name} · podpis {start:%d.%m.%Y}–{end.strftime('%d.%m.%Y') if end else 'bez konce'}": list_id
+                f"{name} · platnost akce {start:%d.%m.%Y}–{end.strftime('%d.%m.%Y') if end else 'bez konce'}": list_id
                 for list_id, name, start, end in lists
             }
             selected_list = st.selectbox("Akční ceník", list_labels) if lists else None
@@ -113,6 +113,23 @@ def render_energy_calculator(conn, username, role):
             signing_date = conn.execute(
                 "SELECT signing_date FROM energy_quotes WHERE id=?", [quote_id]
             ).fetchone()[0]
+
+            st.markdown("#### Faktury současného dodavatele")
+            invoice_files = st.file_uploader(
+                "Nahrajte faktury k odběrným místům",
+                type=["pdf"], accept_multiple_files=True,
+                key=f"energy_invoices_{quote_id}",
+                help="Můžete nahrát více faktur za elektřinu i plyn současně.",
+            )
+            if invoice_files:
+                st.success(
+                    f"Připraveno {len(invoice_files)} PDF k načtení: "
+                    + ", ".join(invoice.name for invoice in invoice_files)
+                )
+                st.info(
+                    "Automatické předvyplnění aktivuji po doplnění parseru podle "
+                    "vzorových faktur. Do té doby lze odběrná místa zadat ručně níže."
+                )
 
             with st.expander("Přidat odběrné místo", expanded=True):
                 commodity = st.radio("Komodita", COMMODITIES, horizontal=True)

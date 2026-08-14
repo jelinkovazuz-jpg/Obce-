@@ -160,7 +160,7 @@ def derive_supply_start(contract_type, signing_date, contract_end_date=None,
         return contract_end_date + timedelta(days=1)
     submitted = notice_submitted_date or signing_date
     if not submitted:
-        raise EnergyCalculationError("Vyplňte datum podání výpovědi nebo podpisu nabídky.")
+        raise EnergyCalculationError("Vyplňte datum podání výpovědi nebo vypracování nabídky.")
     months = int(notice_months or 0)
     if months < 0:
         raise EnergyCalculationError("Výpovědní doba nesmí být záporná.")
@@ -335,7 +335,7 @@ def create_quote(conn, kod_obce, customer_name, product_id, price_list_id,
     """, [price_list_id, product_id, signing_date, signing_date]).fetchone()
     if not valid_list:
         raise EnergyCalculationError(
-            "Vybraný akční ceník neplatí pro datum podpisu nabídky."
+            "Vybraný akční ceník neplatí pro datum vypracování nabídky."
         )
     quote_id = str(uuid4())
     conn.execute("""
@@ -364,7 +364,7 @@ def add_supply_point(conn, quote_id, address, ean_eic, commodity, rate_band,
         """, [quote_id, product_id, price_list_id, commodity]).fetchone()
         if not valid_selection:
             raise EnergyCalculationError(
-                "Produkt nebo akční ceník neodpovídá komoditě a datu podpisu."
+                "Produkt nebo akční ceník neodpovídá komoditě a datu vypracování nabídky."
             )
     point_id = str(uuid4())
     conn.execute("""

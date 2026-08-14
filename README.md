@@ -28,6 +28,10 @@ potom k ní přidávejte odběrná místa. Souhrn započítává všechna místa
 záporných výsledků. Výpočty zahrnují pouze obchodní část ceny a stálý obchodní
 plat, vždy bez DPH.
 
+U nabídky se eviduje datum jejího vypracování. K vybrané nabídce lze nahrát více
+PDF faktur současného dodavatele; po rozpoznání se z nich zakládají jednotlivá
+odběrná místa.
+
 V administraci jsou předvyplněné vzorové ceny Optimal 36 z roku 2026. Před
 odesláním skutečné nabídky je ověřte proti platnému ceníku. Nová měsíční akce se
 nahraje přímo z původních PDF Innogy pro elektřinu a/nebo plyn. Aplikace před
