@@ -12,6 +12,7 @@ from uuid import uuid4
 
 COMMODITIES = ["Elektřina", "Plyn"]
 CONTRACT_TYPES = ["Doba neurčitá", "Doba určitá"]
+PROLONGATION_OUTCOMES = ["Znovu na dobu určitou", "Přechod na dobu neurčitou"]
 
 
 class EnergyCalculationError(RuntimeError):
@@ -87,7 +88,77 @@ def init_energy_calculator(conn):
         )
     """)
     conn.execute("ALTER TABLE energy_price_lists ADD COLUMN IF NOT EXISTS import_id VARCHAR")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS energy_prolongation_rules (
+            id VARCHAR PRIMARY KEY, supplier_pattern VARCHAR NOT NULL,
+            product_pattern VARCHAR NOT NULL, commodity VARCHAR NOT NULL,
+            valid_from DATE NOT NULL, valid_to DATE,
+            outcome VARCHAR NOT NULL, renewal_months INTEGER,
+            notice_months INTEGER, source_url VARCHAR, note VARCHAR,
+            active BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     _seed_optimal_36(conn)
+    _seed_prolongation_rules(conn)
+
+
+def _seed_prolongation_rules(conn):
+    """Known product rule supplied and confirmed by the CRM owner."""
+    conn.execute("""
+        INSERT INTO energy_prolongation_rules (
+            id,supplier_pattern,product_pattern,commodity,valid_from,outcome,
+            renewal_months,notice_months,note
+        ) VALUES (
+            'cez-bez-starosti-1y','ČEZ','Bez starostí na 1 rok','Elektřina',
+            DATE '2020-01-01','Znovu na dobu určitou',12,NULL,
+            'Výchozí pravidlo potvrzené uživatelem; ověřte podle konkrétní smlouvy.'
+        ) ON CONFLICT DO NOTHING
+    """)
+
+
+def save_prolongation_rule(conn, supplier_pattern, product_pattern, commodity,
+                           valid_from, valid_to, outcome, renewal_months=None,
+                           notice_months=None, source_url=None, note=None):
+    if outcome not in PROLONGATION_OUTCOMES:
+        raise EnergyCalculationError("Neplatný způsob prolongace.")
+    if outcome == "Znovu na dobu určitou" and int(renewal_months or 0) <= 0:
+        raise EnergyCalculationError("Vyplňte délku prodloužení v měsících.")
+    if outcome == "Přechod na dobu neurčitou" and int(notice_months or 0) < 0:
+        raise EnergyCalculationError("Výpovědní doba nesmí být záporná.")
+    rule_id = str(uuid4())
+    conn.execute("""
+        INSERT INTO energy_prolongation_rules (
+            id,supplier_pattern,product_pattern,commodity,valid_from,valid_to,
+            outcome,renewal_months,notice_months,source_url,note
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    """, [rule_id, supplier_pattern.strip(), product_pattern.strip(), commodity,
+           valid_from, valid_to, outcome,
+           int(renewal_months) if renewal_months is not None else None,
+           int(notice_months) if notice_months is not None else None,
+           (source_url or "").strip() or None, (note or "").strip() or None])
+    return rule_id
+
+
+def resolve_prolongation_rule(conn, supplier, product, commodity, reference_date):
+    row = conn.execute("""
+        SELECT id,outcome,renewal_months,notice_months,source_url,note,
+               supplier_pattern,product_pattern
+        FROM energy_prolongation_rules
+        WHERE active AND commodity=?
+          AND lower(?) LIKE '%' || lower(supplier_pattern) || '%'
+          AND lower(?) LIKE '%' || lower(product_pattern) || '%'
+          AND valid_from <= ?
+          AND coalesce(valid_to, DATE '9999-12-31') >= ?
+        ORDER BY length(product_pattern) DESC,length(supplier_pattern) DESC,
+                 valid_from DESC
+        LIMIT 1
+    """, [commodity, supplier or "", product or "", reference_date, reference_date]).fetchone()
+    if not row:
+        return None
+    keys = ("id", "outcome", "renewal_months", "notice_months", "source_url",
+            "note", "supplier_pattern", "product_pattern")
+    return dict(zip(keys, row))
 
 
 def _seed_optimal_36(conn):

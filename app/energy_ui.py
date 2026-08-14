@@ -6,11 +6,15 @@ import streamlit as st
 from app.energy_calculator import (
     COMMODITIES,
     CONTRACT_TYPES,
+    PROLONGATION_OUTCOMES,
     EnergyCalculationError,
     add_supply_point,
     calculate_quote,
     create_quote,
     derive_supply_start,
+    add_months,
+    resolve_prolongation_rule,
+    save_prolongation_rule,
 )
 from app.energy_price_import import (
     EnergyPriceImportError,
@@ -69,27 +73,50 @@ def _default_product_price_list(conn, commodity, signing_date):
     )
 
 
-def _invoice_row(extracted, signing_date):
+def _invoice_row(conn, extracted, signing_date):
     stated_contract_end = extracted["contract_end_date"]
     fixed = (
         extracted["contract_type"] == "Doba určitá"
         and stated_contract_end
         and stated_contract_end >= signing_date
     )
-    contract_type = "Doba určitá" if fixed else "Doba neurčitá"
-    contract_end = stated_contract_end if fixed else None
-    notice_months = 0 if fixed else 3
-    notice_date = None if fixed else signing_date
-    supply_start = (
-        contract_end + timedelta(days=1) if fixed else
-        derive_supply_start(contract_type, signing_date, None, notice_months, notice_date)
-    )
     warnings = list(extracted.get("warnings", []))
+    rule = None
     if stated_contract_end and stated_contract_end < signing_date:
-        warnings.append(
-            "Konec smlouvy uvedený na faktuře už uplynul; předběžně počítáme "
-            "s dobou neurčitou a tříměsíční výpovědní dobou."
+        rule = resolve_prolongation_rule(
+            conn, extracted["supplier"], extracted.get("current_product", ""),
+            extracted["commodity"], extracted["billing_to"],
         )
+    if fixed:
+        contract_type, contract_end = "Doba určitá", stated_contract_end
+        notice_months, notice_date = 0, None
+        supply_start = contract_end + timedelta(days=1)
+    elif rule and rule["outcome"] == "Znovu na dobu určitou":
+        contract_type, contract_end = "Doba určitá", stated_contract_end
+        while contract_end < signing_date:
+            contract_end = add_months(contract_end, int(rule["renewal_months"]))
+        notice_months, notice_date = 0, None
+        supply_start = contract_end + timedelta(days=1)
+        warnings.append(
+            f"Použito pravidlo prolongace: prodloužení o {rule['renewal_months']} měsíců."
+        )
+    else:
+        contract_type, contract_end = "Doba neurčitá", None
+        notice_months = int(rule["notice_months"] or 0) if rule else 3
+        notice_date = signing_date
+        supply_start = derive_supply_start(
+            contract_type, signing_date, None, notice_months, notice_date
+        )
+        if rule:
+            warnings.append(
+                f"Použito pravidlo prolongace: přechod na dobu neurčitou, "
+                f"výpovědní doba {notice_months} měsíců."
+            )
+        elif stated_contract_end and stated_contract_end < signing_date:
+            warnings.append(
+                "Pro tento produkt není založené pravidlo prolongace. Použit je pouze "
+                "pracovní odhad tří měsíců; termín je nutné ověřit."
+            )
     return {
         "Soubor": extracted["file_name"],
         "Dodavatel": extracted["supplier"],
@@ -212,7 +239,7 @@ def render_energy_calculator(conn, username, role):
                         "Zkontrolujte hlavně barevně označené nebo prázdné údaje."
                     )
                     invoice_frame = pd.DataFrame(
-                        [_invoice_row(item, signing_date) for item in parsed_invoices]
+                        [_invoice_row(conn, item, signing_date) for item in parsed_invoices]
                     )
                     edited_invoices = st.data_editor(
                         invoice_frame,
@@ -349,6 +376,57 @@ def render_energy_calculator(conn, username, role):
         if role != "admin":
             st.info("Ceníky může upravovat pouze administrátor.")
         else:
+            st.markdown("#### Pravidla prolongací")
+            st.caption(
+                "Pravidlo se páruje podle části názvu dodavatele a produktu přečtených "
+                "z faktury. Přesnější název produktu má přednost."
+            )
+            rules = conn.execute("""
+                SELECT supplier_pattern AS "Dodavatel obsahuje",
+                       product_pattern AS "Produkt obsahuje",commodity AS "Komodita",
+                       valid_from AS "Platí od",valid_to AS "Platí do",
+                       outcome AS "Po skončení",renewal_months AS "Prodloužení měs.",
+                       notice_months AS "Výpověď měs.",source_url AS "Zdroj",
+                       note AS "Poznámka"
+                FROM energy_prolongation_rules WHERE active
+                ORDER BY commodity,supplier_pattern,product_pattern,valid_from DESC
+            """).fetchdf()
+            if not rules.empty:
+                st.dataframe(rules, hide_index=True, width="stretch")
+            with st.expander("Přidat pravidlo prolongace"):
+                with st.form("energy_prolongation_rule", clear_on_submit=True):
+                    a, b = st.columns(2)
+                    rule_supplier = a.text_input("Dodavatel obsahuje", placeholder="např. ČEZ")
+                    rule_product = b.text_input("Produkt obsahuje", placeholder="např. Bez starostí na 1 rok")
+                    rule_commodity = a.selectbox("Komodita", COMMODITIES)
+                    rule_outcome = b.selectbox("Po skončení smlouvy", PROLONGATION_OUTCOMES)
+                    rule_from = a.date_input("Pravidlo platí od", value=date(2020, 1, 1))
+                    use_rule_to = b.checkbox("Má datum konce platnosti")
+                    rule_to = b.date_input("Pravidlo platí do") if use_rule_to else None
+                    if rule_outcome == "Znovu na dobu určitou":
+                        renewal_months = a.number_input("Prodloužení (měsíce)", min_value=1, value=12, step=1)
+                        notice_rule_months = None
+                    else:
+                        renewal_months = None
+                        notice_rule_months = a.number_input("Výpovědní doba (měsíce)", min_value=0, value=3, step=1)
+                    rule_source = st.text_input("Odkaz na oficiální podmínky")
+                    rule_note = st.text_area("Poznámka")
+                    save_rule = st.form_submit_button("Uložit pravidlo", type="primary")
+                if save_rule:
+                    try:
+                        if not rule_supplier.strip() or not rule_product.strip():
+                            raise EnergyCalculationError("Vyplňte dodavatele a produkt.")
+                        save_prolongation_rule(
+                            conn, rule_supplier, rule_product, rule_commodity,
+                            rule_from, rule_to, rule_outcome, renewal_months,
+                            notice_rule_months, rule_source, rule_note,
+                        )
+                    except Exception as exc:
+                        st.error(str(exc))
+                    else:
+                        st.success("Pravidlo prolongace bylo uloženo.")
+                        st.rerun()
+
             st.markdown("#### Aktuální měsíční akční ceník")
             current = conn.execute("""
                 SELECT pl.name,pl.signing_valid_from,pl.signing_valid_to,

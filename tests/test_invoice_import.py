@@ -5,6 +5,8 @@ from unittest.mock import patch
 
 from app.invoice_import import _parse_invoice_text, parse_supplier_invoice_pdf
 from app.energy_ui import _invoice_row
+from app.energy_calculator import init_energy_calculator
+import duckdb
 
 
 CEZ_TEXT = """VYÚČTOVÁNÍ ZA ELEKTŘINU
@@ -84,13 +86,15 @@ Stálý měsíční plat 130,00 Kč 1 560,00 Kč
         self.assertEqual(result["current_monthly_fee"], 130)
 
     def test_expired_fixed_contract_uses_future_notice_period(self):
+        conn = duckdb.connect(":memory:")
+        init_energy_calculator(conn)
         extracted = _parse_invoice_text(CEZ_TEXT, "cez.pdf")
-        row = _invoice_row(extracted, date(2026, 8, 14))
-        self.assertEqual(row["Typ smlouvy"], "Doba neurčitá")
-        self.assertIsNone(row["Konec smlouvy"])
-        self.assertEqual(row["Výpovědní doba"], 3)
-        self.assertEqual(row["Začátek innogy"], date(2026, 12, 1))
-        self.assertIn("už uplynul", row["Upozornění"])
+        row = _invoice_row(conn, extracted, date(2026, 8, 14))
+        self.assertEqual(row["Typ smlouvy"], "Doba určitá")
+        self.assertEqual(row["Konec smlouvy"], date(2027, 5, 24))
+        self.assertEqual(row["Začátek innogy"], date(2027, 5, 25))
+        self.assertIn("prodloužení o 12 měsíců", row["Upozornění"])
+        conn.close()
 
 
 if __name__ == "__main__":
