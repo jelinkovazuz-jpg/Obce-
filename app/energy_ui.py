@@ -140,6 +140,8 @@ def render_energy_calculator(conn, username, role):
                             f"faktura {extracted['billing_from']:%d.%m.%Y}–"
                             f"{extracted['billing_to']:%d.%m.%Y}"
                         )
+                        for warning in extracted.get("warnings", []):
+                            st.warning(warning)
                         invoice_products = _product_options(conn, extracted["commodity"])
                         invoice_product_labels = {
                             label: product_id for product_id, label, _, _ in invoice_products
@@ -189,9 +191,13 @@ def render_energy_calculator(conn, username, role):
                                 key=f"invoice_contract_{quote_id}_{invoice_index}",
                             )
                             if invoice_contract_type == "Doba určitá":
+                                default_contract_end = (
+                                    extracted["contract_end_date"]
+                                    or max(signing_date, extracted["billing_to"])
+                                )
                                 invoice_contract_end = st.date_input(
                                     "Datum konce současné smlouvy",
-                                    value=extracted["contract_end_date"],
+                                    value=default_contract_end,
                                 )
                                 invoice_notice_months = None
                                 invoice_notice_date = None

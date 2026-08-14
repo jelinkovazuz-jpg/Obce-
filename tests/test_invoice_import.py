@@ -3,7 +3,7 @@ from datetime import date
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.invoice_import import parse_supplier_invoice_pdf
+from app.invoice_import import _parse_invoice_text, parse_supplier_invoice_pdf
 
 
 CEZ_TEXT = """VYÚČTOVÁNÍ ZA ELEKTŘINU
@@ -49,6 +49,38 @@ class InvoiceImportTest(unittest.TestCase):
         self.assertEqual(result["current_monthly_fee"], 128)
         self.assertEqual(result["contract_end_date"], date(2026, 5, 24))
         self.assertTrue(result["automatic_extension"])
+
+    def test_epet_invoice_is_recognized_and_partial_fields_are_editable(self):
+        text = """FAKTURA ZA DODÁVKU ELEKTŘINY
+EP ENERGY TRADING, a.s. www.epet.cz
+Zúčtovací období 17.02.2017 - 15.02.2018
+EAN: 859182400700227603
+Celková dodávka elektřiny do odběrných míst za zúčtovací období činí 4,48300 MWh
+"""
+        result = _parse_invoice_text(text, "epet.pdf")
+        self.assertEqual(result["supplier"], "EP ENERGY TRADING, a.s. (epet)")
+        self.assertEqual(result["commodity"], "Elektřina")
+        self.assertEqual(result["actual_consumption_mwh"], 4.483)
+        self.assertEqual(result["ean_eic"], "859182400700227603")
+        self.assertTrue(result["warnings"])
+
+    def test_mnd_gas_common_fields_are_extracted(self):
+        text = """VYÚČTOVÁNÍ ZA PLYN
+MND Energie a.s. Moje MND
+Fakturační období: 1. 1. 2025 - 31. 12. 2025
+EIC: 27ZG600Z12345678
+Adresa odběrného místa: Náměstí 1, Testov EIC: 27ZG600Z12345678
+Celková spotřeba plynu: 12 500,00 kWh
+Dodávka plynu 12,500 MWh 1 250,00 Kč/MWh 15 625,00 Kč
+Stálý měsíční plat 130,00 Kč 1 560,00 Kč
+"""
+        result = _parse_invoice_text(text, "mnd-plyn.pdf")
+        self.assertEqual(result["supplier"], "MND Energie a.s.")
+        self.assertEqual(result["commodity"], "Plyn")
+        self.assertEqual(result["actual_consumption_mwh"], 12.5)
+        self.assertEqual(result["ean_eic"], "27ZG600Z12345678")
+        self.assertEqual(result["current_price_vt"], 1250)
+        self.assertEqual(result["current_monthly_fee"], 130)
 
 
 if __name__ == "__main__":
