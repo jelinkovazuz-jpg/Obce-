@@ -339,9 +339,17 @@ def render_energy_calculator(conn, username, role):
                         summary.append({
                             "EAN/EIC": full["ean_eic"], "Adresa": full["address"],
                             "Komodita": full["commodity"], "Roční spotřeba MWh": full["annual_consumption"],
-                            "Úspora 12 měsíců": y1["saving"], "Úspora 36 měsíců": full["saving"],
+                            "Úspora za 12 měsíců (Kč)": y1["saving"],
+                            "Úspora za celé období 36 měsíců (Kč)": full["saving"],
                         })
-                    st.dataframe(pd.DataFrame(summary), hide_index=True, width="stretch")
+                    st.dataframe(
+                        pd.DataFrame(summary), hide_index=True, width="stretch",
+                        column_config={
+                            "Roční spotřeba MWh": st.column_config.NumberColumn(format="%.3f MWh"),
+                            "Úspora za 12 měsíců (Kč)": st.column_config.NumberColumn(format="%.2f Kč"),
+                            "Úspora za celé období 36 měsíců (Kč)": st.column_config.NumberColumn(format="%.2f Kč"),
+                        },
+                    )
                     for item in result["points"]:
                         y1, full = item["first_year"], item["full"]
                         with st.expander(f"{full['commodity']} · {full['ean_eic']} · {full['address']}"):
@@ -353,10 +361,11 @@ def render_energy_calculator(conn, username, role):
                                 f"Současná cena: {current_price_text} · stálý plat "
                                 f"{full['current_monthly_fee']:,.2f} Kč/měsíc · bez DPH"
                             )
-                            c1, c2, c3 = st.columns(3)
+                            c1, c2, c3, c4 = st.columns(4)
                             c1.metric("Současný náklad / 12 měs.", _money(y1["current_total"]))
                             c2.metric("innogy / 12 měs.", _money(y1["innogy_total"]))
                             c3.metric("Úspora / 12 měs.", _money(y1["saving"]))
+                            c4.metric("Úspora / celých 36 měs.", _money(full["saving"]))
                             st.caption(
                                 f"Rozpad 36 měsíců: energie {_money(full['energy_saving'])}, "
                                 f"stálý plat {_money(full['fixed_saving'])}; celkem {_money(full['saving'])}."
