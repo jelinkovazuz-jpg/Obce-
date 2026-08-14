@@ -2,10 +2,23 @@ import unittest
 
 import duckdb
 
-from app.crm import init_crm, save_offer_document
+from app.crm import init_crm, init_crm_documents, save_offer_document
 
 
 class CrmDocumentTest(unittest.TestCase):
+    def test_document_migration_can_run_independently_and_repeatedly(self):
+        conn = duckdb.connect(":memory:")
+        init_crm_documents(conn)
+        init_crm_documents(conn)
+        self.assertEqual(
+            conn.execute(
+                "SELECT count(*) FROM information_schema.tables "
+                "WHERE table_name='crm_documents'"
+            ).fetchone()[0],
+            1,
+        )
+        conn.close()
+
     def test_offer_is_saved_once_and_new_export_replaces_it(self):
         conn = duckdb.connect(":memory:")
         init_crm(conn)

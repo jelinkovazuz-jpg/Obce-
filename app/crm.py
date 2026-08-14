@@ -62,6 +62,11 @@ def init_crm(conn):
         )
         """
     )
+    init_crm_documents(conn)
+
+
+def init_crm_documents(conn):
+    """Idempotent migration kept callable from hot-reloaded Streamlit views."""
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS crm_documents (
@@ -82,6 +87,7 @@ def init_crm(conn):
 
 def save_offer_document(conn, kod_obce, quote_id, file_name, pdf_data, username):
     """Save the latest generated PDF for a quote in its municipality card."""
+    init_crm_documents(conn)
     if not pdf_data or not bytes(pdf_data).startswith(b"%PDF"):
         raise ValueError("Dokument není platné PDF.")
     existing = conn.execute(

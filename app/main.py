@@ -30,6 +30,7 @@ from app.crm import (
     set_task_completed,
     update_inline_crm,
     update_municipality,
+    init_crm_documents,
 )
 from app.distance import vzdalenost
 from app.email_sync import EmailSyncError, init_email_sync, sync_mailbox
@@ -132,6 +133,9 @@ st.markdown(
 
 
 def render_municipality_documents(document_conn, kod_obce, key_prefix):
+    # Streamlit Cloud can hot-reload this view while retaining an older DB
+    # connection. Run the small idempotent migration at the point of use.
+    init_crm_documents(document_conn)
     st.markdown("#### Uložené nabídky a dokumenty")
     documents = document_conn.execute("""
         SELECT id,document_type,file_name,mime_type,file_data,updated_at,created_by
