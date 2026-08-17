@@ -102,6 +102,28 @@ class EnergyCalculatorTest(unittest.TestCase):
                 "innogy-optimal36-ele", "optimal36-ele-example",
             )
 
+    def test_household_quote_is_not_linked_to_a_municipality(self):
+        quote = create_quote(
+            self.conn, None, "Jan Novák", "innogy-optimal36-ele",
+            "optimal36-ele-example", date(2026, 8, 1), "Domácnost", "tester",
+            "Domácnost",
+        )
+        self.assertEqual(
+            self.conn.execute("""
+                SELECT kod_obce,customer_name,customer_type
+                FROM energy_quotes WHERE id=?
+            """, [quote]).fetchone(),
+            (None, "Jan Novák", "Domácnost"),
+        )
+
+    def test_quote_requires_customer_name(self):
+        with self.assertRaises(EnergyCalculationError):
+            create_quote(
+                self.conn, None, "  ", "innogy-optimal36-ele",
+                "optimal36-ele-example", date(2026, 8, 1), "Domácnost", "tester",
+                "Domácnost",
+            )
+
     def test_invoice_consumption_is_annualized_for_short_period(self):
         self.assertEqual(
             annualize_consumption(5, date(2026, 1, 1), date(2026, 6, 30)),

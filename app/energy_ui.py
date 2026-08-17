@@ -6,6 +6,7 @@ import streamlit as st
 from app.energy_calculator import (
     COMMODITIES,
     CONTRACT_TYPES,
+    CUSTOMER_TYPES,
     PROLONGATION_OUTCOMES,
     EnergyCalculationError,
     add_supply_point,
@@ -161,7 +162,16 @@ def render_energy_calculator(conn, username, role):
         products = _product_options(conn)
         product_labels = {label: product_id for product_id, label, _, _ in products}
         with st.form("energy_new_quote"):
-            municipality_label = st.selectbox("Zákazník / obec", municipality_labels)
+            customer_type = st.radio("Typ zákazníka", CUSTOMER_TYPES, horizontal=True)
+            if customer_type == "Obec":
+                municipality_label = st.selectbox("Zákazník / obec", municipality_labels)
+                household_name = ""
+            else:
+                municipality_label = None
+                household_name = st.text_input(
+                    "Jméno zákazníka / domácnosti",
+                    placeholder="Např. Jan Novák",
+                )
             title = st.text_input("Název nabídky", placeholder="Např. Nabídka energií 2026")
             signing_date = st.date_input("Datum vypracování nabídky", value=date.today())
             product_label = st.selectbox("Výchozí produkt", product_labels)
@@ -176,28 +186,37 @@ def render_energy_calculator(conn, username, role):
             if not selected_list:
                 st.error("Pro produkt není založen žádný ceník.")
             else:
-                code, name = municipality_labels[municipality_label]
-                quote_id = create_quote(
-                    conn, code, name, product_labels[product_label],
-                    list_labels[selected_list], signing_date, title, username,
-                )
-                st.session_state.energy_quote_id = quote_id
-                st.success("Nabídka byla vytvořena. Pokračujte přidáním odběrných míst.")
+                if customer_type == "Obec":
+                    code, name = municipality_labels[municipality_label]
+                else:
+                    code, name = None, household_name.strip()
+                try:
+                    quote_id = create_quote(
+                        conn, code, name, product_labels[product_label],
+                        list_labels[selected_list], signing_date, title, username,
+                        customer_type,
+                    )
+                except EnergyCalculationError as exc:
+                    st.error(str(exc))
+                else:
+                    st.session_state.energy_quote_id = quote_id
+                    st.success("Nabídka byla vytvořena. Pokračujte přidáním odběrných míst.")
 
     with calculation_tab:
         quotes = conn.execute("""
             SELECT q.id,q.customer_name,coalesce(q.title,''),q.signing_date,
-                   count(sp.id)
+                   count(sp.id),coalesce(q.customer_type,'Obec')
             FROM energy_quotes q LEFT JOIN energy_supply_points sp ON sp.quote_id=q.id
-            GROUP BY q.id,q.customer_name,q.title,q.signing_date,q.created_at
+            GROUP BY q.id,q.customer_name,q.title,q.signing_date,q.customer_type,q.created_at
             ORDER BY q.created_at DESC
         """).fetchall()
         if not quotes:
             st.info("Nejprve vytvořte nabídku.")
         else:
             quote_labels = {
-                f"{customer} · {title or 'nabídka'} · {signed:%d.%m.%Y} · {count} OM": quote_id
-                for quote_id, customer, title, signed, count in quotes
+                f"{'🏛️' if customer_type == 'Obec' else '🏠'} {customer} · "
+                f"{title or 'nabídka'} · {signed:%d.%m.%Y} · {count} OM": quote_id
+                for quote_id, customer, title, signed, count, customer_type in quotes
             }
             default_id = st.session_state.get("energy_quote_id")
             labels = list(quote_labels)
@@ -362,7 +381,17 @@ def render_energy_calculator(conn, username, role):
                         for char in quote_label.split("·", 1)[0].strip()
                     )
                     pdf_file_name = f"nabidka_energii_{safe_customer}.pdf"
-                    download_col, save_col = st.columns(2)
+                    quote_owner = conn.execute("""
+                        SELECT kod_obce,coalesce(customer_type,'Obec')
+                        FROM energy_quotes WHERE id=?
+                    """, [quote_id]).fetchone()
+                    can_save_to_municipality = bool(
+                        quote_owner and quote_owner[1] == "Obec" and quote_owner[0] is not None
+                    )
+                    if can_save_to_municipality:
+                        download_col, save_col = st.columns(2)
+                    else:
+                        download_col, save_col = st.container(), None
                     with download_col:
                         st.download_button(
                             "📄 Stáhnout grafickou nabídku v PDF",
@@ -373,19 +402,14 @@ def render_energy_calculator(conn, username, role):
                             key=f"energy_pdf_{quote_id}",
                             width="stretch",
                         )
-                    with save_col:
-                        if st.button(
-                            "💾 Uložit do karty obce", key=f"save_energy_pdf_{quote_id}",
-                            width="stretch",
-                        ):
-                            municipality = conn.execute(
-                                "SELECT kod_obce FROM energy_quotes WHERE id=?", [quote_id]
-                            ).fetchone()
-                            if not municipality or municipality[0] is None:
-                                st.error("Nabídka není přiřazená ke kartě obce.")
-                            else:
+                    if save_col is not None:
+                        with save_col:
+                            if st.button(
+                                "💾 Uložit do karty obce", key=f"save_energy_pdf_{quote_id}",
+                                width="stretch",
+                            ):
                                 _, replaced = save_offer_document(
-                                    conn, municipality[0], quote_id, pdf_file_name,
+                                    conn, quote_owner[0], quote_id, pdf_file_name,
                                     pdf_data, username,
                                 )
                                 st.success(

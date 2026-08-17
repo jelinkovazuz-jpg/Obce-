@@ -12,6 +12,7 @@ from uuid import uuid4
 
 COMMODITIES = ["Elektřina", "Plyn"]
 CONTRACT_TYPES = ["Doba neurčitá", "Doba určitá"]
+CUSTOMER_TYPES = ["Obec", "Domácnost"]
 PROLONGATION_OUTCOMES = ["Znovu na dobu určitou", "Přechod na dobu neurčitou"]
 
 
@@ -73,6 +74,10 @@ def init_energy_calculator(conn):
             UNIQUE (quote_id, ean_eic)
         )
     """)
+    conn.execute(
+        "ALTER TABLE energy_quotes ADD COLUMN IF NOT EXISTS "
+        "customer_type VARCHAR DEFAULT 'Obec'"
+    )
     conn.execute("ALTER TABLE energy_supply_points ADD COLUMN IF NOT EXISTS product_id VARCHAR")
     conn.execute("ALTER TABLE energy_supply_points ADD COLUMN IF NOT EXISTS price_list_id VARCHAR")
     conn.execute("ALTER TABLE energy_supply_points ADD COLUMN IF NOT EXISTS source_invoice_file VARCHAR")
@@ -401,7 +406,11 @@ def calculate_quote(conn, quote_id):
 
 
 def create_quote(conn, kod_obce, customer_name, product_id, price_list_id,
-                 signing_date, title, username):
+                 signing_date, title, username, customer_type="Obec"):
+    if customer_type not in CUSTOMER_TYPES:
+        raise EnergyCalculationError("Neplatný typ zákazníka.")
+    if not (customer_name or "").strip():
+        raise EnergyCalculationError("Vyplňte jméno zákazníka.")
     valid_list = conn.execute("""
         SELECT 1 FROM energy_price_lists
         WHERE id=? AND product_id=? AND active
@@ -415,10 +424,11 @@ def create_quote(conn, kod_obce, customer_name, product_id, price_list_id,
     quote_id = str(uuid4())
     conn.execute("""
         INSERT INTO energy_quotes
-            (id,kod_obce,customer_name,product_id,price_list_id,signing_date,title,created_by)
-        VALUES (?,?,?,?,?,?,?,?)
+            (id,kod_obce,customer_name,product_id,price_list_id,signing_date,title,created_by,
+             customer_type)
+        VALUES (?,?,?,?,?,?,?,?,?)
     """, [quote_id, kod_obce, customer_name.strip(), product_id, price_list_id,
-           signing_date, title.strip() or None, username])
+           signing_date, title.strip() or None, username, customer_type])
     return quote_id
 
 
