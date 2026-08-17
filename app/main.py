@@ -1,5 +1,5 @@
 from io import BytesIO
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
@@ -74,6 +74,11 @@ def configured_value(name, default=""):
 
 @st.fragment(run_every="10m")
 def automatic_email_sync():
+    now = datetime.now()
+    last_attempt = st.session_state.get("email_last_auto_sync_at")
+    if last_attempt and now - last_attempt < timedelta(minutes=10):
+        return
+
     address = configured_value("SEZNAM_EMAIL_ADDRESS", "program.obce@email.cz")
     password = configured_value("SEZNAM_EMAIL_PASSWORD") or st.session_state.get(
         "email_password_input", ""
@@ -85,6 +90,9 @@ def automatic_email_sync():
         )
         return
 
+    # A normal Streamlit rerun also executes fragments. Remember the attempt
+    # before connecting so every widget click cannot reopen the IMAP mailbox.
+    st.session_state.email_last_auto_sync_at = now
     sync_conn = connect()
     try:
         init_crm(sync_conn)
@@ -98,7 +106,7 @@ def automatic_email_sync():
         sync_conn.close()
 
     if "stats" in locals():
-        checked_at = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        checked_at = now.strftime("%d.%m.%Y %H:%M:%S")
         st.session_state.email_last_auto_sync = checked_at
         st.success(
             f"Automatická synchronizace aktivní · poslední kontrola {checked_at} · "
@@ -112,11 +120,14 @@ if not st.session_state.logged:
     st.stop()
 
 conn = connect()
-init_crm(conn)
-init_email_sync(conn)
-init_email_sender(conn)
-init_innogy(conn)
-init_energy_calculator(conn)
+SCHEMA_VERSION = 2
+if st.session_state.get("schema_version") != SCHEMA_VERSION:
+    init_crm(conn)
+    init_email_sync(conn)
+    init_email_sender(conn)
+    init_innogy(conn)
+    init_energy_calculator(conn)
+    st.session_state.schema_version = SCHEMA_VERSION
 
 st.markdown(
     """
@@ -283,16 +294,18 @@ with st.sidebar:
         logout()
     st.divider()
     st.caption("CRM obcí ČR")
+    active_page = st.radio(
+        "Navigace",
+        ["🔎 Vyhledávání", "📊 Pipeline", "🏢 Detail obce", "✅ Úkoly",
+         "📧 E-mail", "⚡ Innogy", "💡 Kalkulace"],
+        label_visibility="collapsed",
+    )
 
 st.title("🏛️ CRM obcí ČR")
 st.caption("Vyhledávání obcí, obchodní pipeline, aktivity a úkoly")
+automatic_email_sync()
 
-tab_search, tab_pipeline, tab_detail, tab_tasks, tab_email, tab_innogy, tab_energy = st.tabs(
-    ["🔎 Vyhledávání", "📊 Pipeline", "🏢 Detail obce", "✅ Úkoly", "📧 E-mail", "⚡ Innogy", "💡 Kalkulace"]
-)
-
-
-with tab_search:
+if active_page == "🔎 Vyhledávání":
     left, middle, right = st.columns([2, 1, 1])
     with left:
         mesto = st.text_input("Výchozí obec", value="Heřmanův Městec")
@@ -552,7 +565,7 @@ with tab_search:
                         )
 
 
-with tab_pipeline:
+if active_page == "📊 Pipeline":
     summary = conn.execute(
         """
         SELECT s.status, count(c.kod_obce) AS pocet
@@ -590,7 +603,7 @@ with tab_pipeline:
         st.info("Vyberte alespoň jeden stav.")
 
 
-with tab_detail:
+if active_page == "🏢 Detail obce":
     municipalities = conn.execute(
         """
         SELECT kod_obce, nazev, coalesce(okres, ''), coalesce(kraj, '')
@@ -709,7 +722,7 @@ with tab_detail:
     render_municipality_documents(conn, kod_obce, "detail_document")
 
 
-with tab_tasks:
+if active_page == "✅ Úkoly":
     mine_only = st.checkbox("Pouze moje úkoly", value=True)
     show_completed = st.checkbox("Zobrazit dokončené", value=False)
     clauses, params = ["1 = 1"], []
@@ -744,7 +757,7 @@ with tab_tasks:
             st.divider()
 
 
-with tab_email:
+if active_page == "📧 E-mail":
     st.subheader("Synchronizace e-mailové komunikace")
     st.caption(
         "CRM načte přijaté i odeslané zprávy a porovná jejich adresy s e-maily obcí. "
@@ -754,8 +767,6 @@ with tab_email:
         "SEZNAM_EMAIL_ADDRESS", "program.obce@email.cz"
     )
     configured_password = configured_value("SEZNAM_EMAIL_PASSWORD")
-    automatic_email_sync()
-
     email_address = st.text_input(
         "E-mailová adresa", value=configured_address, key="email_address_input"
     )
@@ -766,6 +777,11 @@ with tab_email:
         key="email_password_input",
         help="Při dvoufázovém ověření použijte samostatné heslo pro poštovní program.",
     )
+    if st.session_state.get("email_last_auto_sync"):
+        st.caption(
+            "Poslední automatická kontrola: "
+            + st.session_state.email_last_auto_sync
+        )
     if st.button("🔄 Synchronizovat e-mailovou komunikaci", type="primary"):
         if not email_password:
             st.error("Zadejte heslo nebo ho nastavte v souboru .env.")
@@ -799,7 +815,7 @@ with tab_email:
     )
 
 
-with tab_innogy:
+if active_page == "⚡ Innogy":
     st.subheader("Import smluv Innogy iSales")
     st.caption(
         "Nahrajte Excel export ContractListExport.xlsx. Obce se párují primárně "
@@ -861,7 +877,7 @@ with tab_innogy:
         st.dataframe(unmatched_contracts, hide_index=True, width="stretch")
 
 
-with tab_energy:
+if active_page == "💡 Kalkulace":
     render_energy_calculator(
         conn, st.session_state.username, st.session_state.role
     )

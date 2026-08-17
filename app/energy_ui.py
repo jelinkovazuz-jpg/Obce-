@@ -147,11 +147,14 @@ def _invoice_row(conn, extracted, signing_date):
 def render_energy_calculator(conn, username, role):
     st.subheader("Kalkulačka cenových nabídek energií")
     st.caption("Obchodní část ceny bez DPH. Regulovaná část se do porovnání nezahrnuje.")
-    new_tab, calculation_tab, admin_tab = st.tabs(
-        ["Nová nabídka", "Odběrná místa a výpočet", "Administrace ceníků"]
+    active_section = st.radio(
+        "Část kalkulačky",
+        ["Nová nabídka", "Odběrná místa a výpočet", "Administrace ceníků"],
+        horizontal=True,
+        label_visibility="collapsed",
     )
 
-    with new_tab:
+    if active_section == "Nová nabídka":
         municipalities = conn.execute(
             "SELECT kod_obce,nazev,coalesce(okres,'') FROM obce ORDER BY nazev,okres"
         ).fetchall()
@@ -202,7 +205,7 @@ def render_energy_calculator(conn, username, role):
                     st.session_state.energy_quote_id = quote_id
                     st.success("Nabídka byla vytvořena. Pokračujte přidáním odběrných míst.")
 
-    with calculation_tab:
+    if active_section == "Odběrná místa a výpočet":
         quotes = conn.execute("""
             SELECT q.id,q.customer_name,coalesce(q.title,''),q.signing_date,
                    count(sp.id),coalesce(q.customer_type,'Obec')
@@ -447,7 +450,7 @@ def render_energy_calculator(conn, username, role):
                 else:
                     st.caption("Nabídka zatím nemá odběrná místa.")
 
-    with admin_tab:
+    if active_section == "Administrace ceníků":
         if role != "admin":
             st.info("Ceníky může upravovat pouze administrátor.")
         else:
