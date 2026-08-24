@@ -133,6 +133,34 @@ Celková platba za obchodní část 17 721,72 Kč
         self.assertEqual(result["current_price_vt"], 1327.27)
         self.assertEqual(result["current_monthly_fee"], 138.84)
 
+    def test_centropol_invoice_extracts_consumption_tariffs_and_discounted_prices(self):
+        text = """VYÚČTOVÁNÍ ZA ELEKTŘINU
+Řádné vyúčtování za sdružené služby dodávky elektřiny za období 01.12.2025 - 11.08.2026
+DODAVATEL: CENTROPOL ENERGY, a.s. www.centropol.cz
+Souhrnné informace Vašeho vyúčtování pro odběrné místo s kódem EAN 859182400700852669 na adrese Kunčice 100, Kunčice
+Vaše celková spotřeba elektřiny 10,3250 MWh
+Spotřeba ve vysokém tarifu (VT/T1) 5,12 Kč/kWh 7 431,00 kWh 38 024,42 Kč
+Spotřeba v nízkem tarifu (NT/T2) 2,78 Kč/kWh 2 894,00 kWh 8 035,72 Kč
+Odhad spotřeby C25D (TDD2) 1,0 29 363 - 30 409 kWh
+Období 01.08.2026 - 11.08.2026 Produkt: FIXNĚ PRO PODNIKATELE na 2 roky
+Dodávky VT 2 775,00 Kč/MWh 0,26700 MWh 740,93 Kč
+Dodávky NT 2 510,00 Kč/MWh 0,10400 MWh 261,04 Kč
+Stálý měsíční plat 130,00 Kč/měsíc 0,3548 měsíc 46,12 Kč
+Sleva 5 % - spotřeba NT -2,61 Kč 5 % -13,05 Kč
+Sleva 5 % - spotřeba VT -7,41 Kč 5 % -37,05 Kč
+EAN/EIC Závazek smlouvy do Produkt
+859182400700852669 30.11.2027 FIXNĚ PRO PODNIKATELE
+"""
+        result = _parse_invoice_text(text, "centropol.pdf")
+        self.assertEqual(result["actual_consumption_mwh"], 10.325)
+        self.assertAlmostEqual(result["vt_share"], 71.9709, places=4)
+        self.assertEqual(result["current_price_vt"], 2636.25)
+        self.assertEqual(result["current_price_nt"], 2384.5)
+        self.assertEqual(result["current_monthly_fee"], 130)
+        self.assertEqual(result["rate_band"], "C25d")
+        self.assertEqual(result["address"], "Kunčice 100, Kunčice")
+        self.assertEqual(result["contract_end_date"], date(2027, 11, 30))
+
     def test_expired_fixed_contract_uses_future_notice_period(self):
         conn = duckdb.connect(":memory:")
         init_energy_calculator(conn)
