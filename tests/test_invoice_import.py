@@ -3,7 +3,11 @@ from datetime import date
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.invoice_import import _parse_invoice_text, parse_supplier_invoice_pdf
+from app.invoice_import import (
+    _parse_invoice_text,
+    _parse_ppas_points,
+    parse_supplier_invoice_pdf,
+)
 from app.energy_ui import _invoice_row
 from app.energy_calculator import init_energy_calculator
 import duckdb
@@ -160,6 +164,46 @@ EAN/EIC Závazek smlouvy do Produkt
         self.assertEqual(result["rate_band"], "C25d")
         self.assertEqual(result["address"], "Kunčice 100, Kunčice")
         self.assertEqual(result["contract_end_date"], date(2027, 11, 30))
+
+    def test_ppas_combined_invoice_is_split_into_supply_points(self):
+        text = """Fakturační adresa Doručovací adresa
+Obec Srch Obec Srch
+Pražská plynárenská, a. s. moje.ppas.cz
+ODBĚRNÉ MÍSTO:0790298513 TŘÍDA TDD: MO4
+ADRESA: Pohránovská 220, 533 52 Srch
+EIC KÓD: 27ZG500Z0064115C
+PŘEPOČTENÁ ROČNÍ SPOTŘEBA* (v kWh): 20 935
+DETAIL SPOTŘEBY:
+201719 04.10.2024 - 31.10.2024 01 1 695 1 797 102 1,0261 10,9215 1 143,07 1,14307
+201719 01.10.2025 - 06.10.2025 01 3 542 3 575 33 1,0261 10,9215 369,82 0,36982
+Celkem: 1 880 21,06832
+Způsob odečtu:
+01.01.2025 - 06.10.2025 Komoditní složka ceny 13,72802 MWh 0,00000 1 105,00 15 169,46
+01.01.2025 - 06.10.2025 Stálý měsíční plat 0,00000 9,19355 0,00 0,00
+SOUHRN ZA ODBĚRNÉ MÍSTO:
+ODBĚRNÉ MÍSTO:0790298521 TŘÍDA TDD: MO4
+ADRESA: Na Kopečku 31/0, 533 52 Srch
+EIC KÓD: 27ZG500Z0064120J
+PŘEPOČTENÁ ROČNÍ SPOTŘEBA* (v kWh): 100 397
+DETAIL SPOTŘEBY:
+5747916 04.10.2024 - 31.10.2024 01 114 669 115 159 490 1,0257 10,9215 5 489,07 5,48907
+5747916 01.10.2025 - 05.10.2025 01 262 359 97 1,0261 10,9215 1 087,04 1,08704
+Celkem: 8 999 100,81000
+Způsob odečtu:
+01.01.2025 - 05.10.2025 Komoditní složka ceny 64,33569 MWh 0,00000 1 105,00 71 090,93
+01.01.2025 - 05.10.2025 Kapacitní složka ceny 79,93600 Nm3 9,16129 0,00 0,00
+Datum platnosti smlouvy a produktu ke dni vystavení faktury
+3000658584_01 PLYN INDIVIDUAL 31.12.2025 31.12.2025
+3000658590_01 PLYN INDIVIDUAL 31.12.2025 31.12.2025
+"""
+        points = _parse_ppas_points(text, "ppas.pdf")
+        self.assertEqual(len(points), 2)
+        self.assertEqual(points[0]["ean_eic"], "27ZG500Z0064115C")
+        self.assertEqual(points[0]["annual_consumption_mwh"], 20.935)
+        self.assertEqual(points[0]["current_price_vt"], 1105)
+        self.assertEqual(points[0]["contract_end_date"], date(2025, 12, 31))
+        self.assertEqual(points[1]["annual_consumption_mwh"], 100.397)
+        self.assertEqual(points[1]["rate_band"], "nad 63 MWh")
 
     def test_expired_fixed_contract_uses_future_notice_period(self):
         conn = duckdb.connect(":memory:")

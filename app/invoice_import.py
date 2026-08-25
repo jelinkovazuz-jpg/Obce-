@@ -333,6 +333,12 @@ def _centropol_details(text, commodity):
 
 
 def parse_supplier_invoice_pdf(pdf_bytes, file_name="faktura.pdf"):
+    """Backward-compatible single-point parser."""
+    return parse_supplier_invoice_pdf_points(pdf_bytes, file_name)[0]
+
+
+def parse_supplier_invoice_pdf_points(pdf_bytes, file_name="faktura.pdf"):
+    """Return every supply point found in a supplier PDF."""
     try:
         import pdfplumber
         with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
@@ -344,7 +350,103 @@ def parse_supplier_invoice_pdf(pdf_bytes, file_name="faktura.pdf"):
         raise InvoiceImportError(
             f"Faktura {file_name} neobsahuje čitelný text. Nahrajte původní PDF, ne naskenovaný obrázek."
         )
-    return _parse_invoice_text(text, file_name)
+    if _detect_supplier(text) == "Pražská plynárenská, a.s.":
+        points = _parse_ppas_points(text, file_name)
+        if points:
+            return points
+    return [_parse_invoice_text(text, file_name)]
+
+
+def _parse_ppas_points(text, file_name):
+    """Split a multi-site Pražská plynárenská invoice into supply points."""
+    customer_match = re.search(r"Fakturační adresa[^\n]*\n([^\n]+)", text, re.IGNORECASE)
+    contract_groups = {}
+    for contract_number, value in re.findall(
+        r"(\d+(?:_\d+)?)\s+PLYN\s+INDIVIDUAL\s+"
+        r"(\d{1,2}[.]\d{1,2}[.]\d{4})\s+"
+        r"\d{1,2}[.]\d{1,2}[.]\d{4}",
+        text, re.IGNORECASE,
+    ):
+        base_number = re.sub(r"_\d+$", "", contract_number)
+        contract_groups[base_number] = max(
+            contract_groups.get(base_number, _date(value)), _date(value)
+        )
+    contract_ends = list(contract_groups.values())
+    blocks = [
+        block for block in re.split(r"(?=ODBĚRNÉ MÍSTO:)", text)[1:]
+        if re.search(r"EIC KÓD:\s*[A-Z0-9]+", block, re.IGNORECASE)
+    ]
+    points = []
+    money = r"[\d]+(?:[ \u00a0][\d]{3})*,[\d]+"
+    date_range = (
+        r"(\d{1,2}[.]\d{1,2}[.]\d{4})\s*-\s*"
+        r"(\d{1,2}[.]\d{1,2}[.]\d{4})"
+    )
+    for index, block in enumerate(blocks):
+        eic_match = re.search(r"EIC KÓD:\s*([A-Z0-9]+)", block, re.IGNORECASE)
+        address_match = re.search(r"ADRESA:\s*([^\n]+)", block, re.IGNORECASE)
+        annual_match = re.search(
+            r"PŘEPOČTENÁ ROČNÍ SPOTŘEBA\*\s*\(v kWh\):\s*([\d \u00a0]+)",
+            block, re.IGNORECASE,
+        )
+        detail_match = re.search(
+            r"DETAIL SPOTŘEBY:(.*?)Způsob odečtu:", block,
+            re.IGNORECASE | re.DOTALL,
+        )
+        detail = detail_match.group(1) if detail_match else ""
+        total_match = re.search(
+            r"Celkem:\s+[\d \u00a0]+\s+([\d \u00a0]+,\d+)", detail,
+            re.IGNORECASE,
+        )
+        periods = re.findall(date_range, detail)
+        price_matches = re.findall(
+            rf"^{date_range}\s+Komoditní složka ceny\s+{money}\s+MWh\s+"
+            rf"{money}\s+({money})\s+{money}$",
+            block, re.IGNORECASE | re.MULTILINE,
+        )
+        fee_matches = re.findall(
+            rf"^{date_range}\s+(?:Stálý měsíční plat|Kapacitní složka ceny)\s+"
+            rf"{money}(?:\s+Nm3)?\s+({money})\s+({money})\s+{money}$",
+            block, re.IGNORECASE | re.MULTILINE,
+        )
+        if not (eic_match and address_match and annual_match and total_match and periods):
+            continue
+        billing_from = min(_date(start) for start, _ in periods)
+        billing_to = max(_date(end) for _, end in periods)
+        actual_mwh = _number(total_match.group(1))
+        annual_mwh = _number(annual_match.group(1)) / 1000
+        price = _number(price_matches[-1][-1]) if price_matches else 0.0
+        monthly_fee = _number(fee_matches[-1][-1]) if fee_matches else 0.0
+        contract_end = contract_ends[index] if index < len(contract_ends) else None
+        warnings = []
+        if price == 0:
+            warnings.append("Nepodařilo se bezpečně určit obchodní cenu za MWh.")
+        if contract_end is None:
+            warnings.append("Faktura neuvádí jednoznačné datum konce smlouvy; smluvní údaje doplňte ručně.")
+        points.append({
+            "file_name": file_name,
+            "supplier": "Pražská plynárenská, a.s.",
+            "customer": customer_match.group(1).strip() if customer_match else "",
+            "address": address_match.group(1).strip(),
+            "ean_eic": eic_match.group(1).upper(),
+            "commodity": "Plyn",
+            "rate_band": _gas_band(annual_mwh),
+            "billing_from": billing_from,
+            "billing_to": billing_to,
+            "actual_consumption_mwh": round(actual_mwh, 6),
+            "annual_consumption_mwh": round(annual_mwh, 6),
+            "consumption_source": "Roční spotřeba uvedená dodavatelem",
+            "vt_share": 100.0,
+            "current_price_vt": price,
+            "current_price_nt": None,
+            "current_monthly_fee": monthly_fee,
+            "contract_type": "Doba určitá" if contract_end else "Doba neurčitá",
+            "contract_end_date": contract_end,
+            "automatic_extension": False,
+            "current_product": "PLYN INDIVIDUAL",
+            "warnings": warnings,
+        })
+    return points
 
 
 def _parse_invoice_text(text, file_name):
