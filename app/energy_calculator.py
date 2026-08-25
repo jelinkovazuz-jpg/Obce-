@@ -263,6 +263,22 @@ def annualize_consumption(consumption, period_from, period_to, stated_annual=Non
     return round(float(consumption) / days * 365, 6)
 
 
+def _interval_consumption(annual, supply_start, interval_start, interval_end):
+    """Prorate within supply years so every 12 months equals annual consumption."""
+    total = Decimal("0")
+    year_start = supply_start
+    while year_start < interval_end:
+        year_end = add_months(year_start, 12)
+        overlap_start = max(interval_start, year_start)
+        overlap_end = min(interval_end, year_end)
+        if overlap_start < overlap_end:
+            overlap_days = Decimal((overlap_end - overlap_start).days)
+            year_days = Decimal((year_end - year_start).days)
+            total += annual * overlap_days / year_days
+        year_start = year_end
+    return total
+
+
 def _price_segments(conn, price_list_id, rate_band, component, start, end):
     """Resolve an interval into non-overlapping prices; exact rows beat generic ones."""
     rows = conn.execute("""
@@ -386,7 +402,9 @@ def calculate_supply_point(conn, point_id, months=36):
         )
         for seg_start, seg_end, unit_price, monthly_fee in segments:
             days = (seg_end - seg_start).days
-            consumption = component_annual * Decimal(days) / Decimal("365")
+            consumption = _interval_consumption(
+                component_annual, start, seg_start, seg_end
+            )
             cost = consumption * _as_decimal(unit_price)
             innogy_energy += cost
             period_key = (seg_start, seg_end - timedelta(days=1), component,

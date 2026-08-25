@@ -23,7 +23,11 @@ from app.energy_price_import import (
     import_parsed_pdf,
     parse_innogy_price_pdf,
 )
-from app.invoice_import import InvoiceImportError, parse_supplier_invoice_pdf_points
+from app.invoice_import import (
+    InvoiceImportError,
+    merge_invoice_supply_points,
+    parse_supplier_invoice_pdf_points,
+)
 from app.energy_pdf import build_energy_offer_pdf
 from app.crm import save_offer_document
 
@@ -265,6 +269,7 @@ def render_energy_calculator(conn, username, role):
                 if failed_invoices:
                     st.error("Některé soubory se nepodařilo načíst:\n\n- " + "\n- ".join(failed_invoices))
                 if parsed_invoices:
+                    parsed_invoices = merge_invoice_supply_points(parsed_invoices)
                     st.success(
                         f"Z {len(invoice_files)} PDF načteno {len(parsed_invoices)} odběrných míst. "
                         "Zkontrolujte hlavně barevně označené nebo prázdné údaje."

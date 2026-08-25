@@ -83,6 +83,11 @@ class EnergyCalculatorTest(unittest.TestCase):
         result = calculate_supply_point(self.conn, self.add_point(), 36)
         self.assertEqual(result["innogy_fixed"], 36 * 127)
         self.assertEqual(result["current_fixed"], 36 * 100)
+        self.assertAlmostEqual(
+            sum(line["consumption_mwh"] for line in result["lines"]),
+            36,
+            places=9,
+        )
 
     def test_zero_consumption_keeps_negative_saving(self):
         result = calculate_supply_point(

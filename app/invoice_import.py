@@ -6,6 +6,7 @@ instead of silently inventing a number or rejecting the whole invoice.
 """
 
 from io import BytesIO
+from datetime import date
 import re
 
 import pandas as pd
@@ -319,17 +320,75 @@ def _centropol_details(text, commodity):
         r"(\d{1,2}\s*[.]\s*\d{1,2}\s*[.]\s*\d{4})",
         text, re.IGNORECASE,
     ) if identifier else None
+    if identifier and not contract_match:
+        contract_match = re.search(
+            rf"{re.escape(identifier)}[^\n]*?ke dni\s+"
+            r"(\d{1,2}\s*[.]\s*\d{1,2}\s*[.]\s*\d{4})",
+            text, re.IGNORECASE,
+        )
     return {
         "actual_mwh": actual_mwh,
         "vt_share": 100.0 if actual_mwh <= 0 else quantities["VT"] / actual_mwh * 100,
         "price_vt": effective_price("VT") or 0.0,
         "price_nt": effective_price("NT"),
         "monthly_fee": _number(fee_matches[-1]) if fee_matches else 0.0,
+        "monthly_fee_found": bool(fee_matches),
         "address": address_match.group(1).strip() if address_match else "",
         "rate_band": rate_match.group(1).upper() + "d" if rate_match else "Všechny",
         "product": product_matches[-1].strip() if product_matches else "",
         "contract_end": _date(contract_match.group(1)) if contract_match else None,
     }
+
+
+def merge_invoice_supply_points(points):
+    """Combine non-overlapping invoice fragments belonging to the same EAN/EIC."""
+    groups = {}
+    for point in points:
+        key = (point.get("ean_eic") or point.get("file_name", "")).strip().upper()
+        groups.setdefault(key, []).append(point)
+    merged = []
+    for group in groups.values():
+        group.sort(key=lambda item: (item.get("billing_to") or date.min))
+        if len(group) == 1 or any(
+            item.get("consumption_source") == "Roční spotřeba uvedená dodavatelem"
+            for item in group
+        ):
+            merged.append(group[-1])
+            continue
+        periods_valid = all(
+            item.get("billing_from") and item.get("billing_to") for item in group
+        )
+        overlaps = periods_valid and any(
+            current["billing_from"] <= previous["billing_to"]
+            for previous, current in zip(group, group[1:])
+        )
+        if not periods_valid or overlaps:
+            merged.append(group[-1])
+            continue
+        latest = dict(group[-1])
+        actual = sum(float(item["actual_consumption_mwh"]) for item in group)
+        period_from = min(item["billing_from"] for item in group)
+        period_to = max(item["billing_to"] for item in group)
+        weighted_vt = sum(
+            float(item["actual_consumption_mwh"]) * float(item.get("vt_share", 100))
+            for item in group
+        )
+        latest.update({
+            "file_name": " + ".join(item["file_name"] for item in group),
+            "billing_from": period_from,
+            "billing_to": period_to,
+            "actual_consumption_mwh": round(actual, 6),
+            "annual_consumption_mwh": round(
+                annualize_consumption(actual, period_from, period_to), 6
+            ),
+            "consumption_source": f"Součet {len(group)} navazujících faktur",
+            "vt_share": round(weighted_vt / actual, 4) if actual else 100.0,
+            "warnings": sorted({
+                warning for item in group for warning in item.get("warnings", [])
+            }),
+        })
+        merged.append(latest)
+    return sorted(merged, key=lambda item: (item["commodity"], item["ean_eic"]))
 
 
 def parse_supplier_invoice_pdf(pdf_bytes, file_name="faktura.pdf"):
@@ -494,7 +553,8 @@ def _parse_invoice_text(text, file_name):
     if price_vt == 0:
         warnings.append("Nepodařilo se bezpečně určit obchodní cenu za MWh.")
     monthly_fee = supplier_details["monthly_fee"] if supplier_details else _monthly_fee(text)
-    if monthly_fee == 0:
+    fee_was_explicit = bool(supplier_details and supplier_details.get("monthly_fee_found"))
+    if monthly_fee == 0 and not fee_was_explicit:
         warnings.append("Nepodařilo se bezpečně určit stálý obchodní měsíční plat.")
     if contract_end is None and not re.search(r"na dobu neurčitou", text, re.IGNORECASE):
         warnings.append("Faktura neuvádí jednoznačné datum konce smlouvy; smluvní údaje doplňte ručně.")

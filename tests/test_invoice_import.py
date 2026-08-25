@@ -6,6 +6,7 @@ from unittest.mock import patch
 from app.invoice_import import (
     _parse_invoice_text,
     _parse_ppas_points,
+    merge_invoice_supply_points,
     parse_supplier_invoice_pdf,
 )
 from app.energy_ui import _invoice_row
@@ -204,6 +205,27 @@ Datum platnosti smlouvy a produktu ke dni vystavení faktury
         self.assertEqual(points[0]["contract_end_date"], date(2025, 12, 31))
         self.assertEqual(points[1]["annual_consumption_mwh"], 100.397)
         self.assertEqual(points[1]["rate_band"], "nad 63 MWh")
+
+    def test_consecutive_invoices_for_same_ean_are_annualized_together(self):
+        base = {
+            "ean_eic": "EAN1", "commodity": "Elektřina", "vt_share": 100,
+            "warnings": [], "consumption_source": "Skutečná spotřeba za období",
+        }
+        first = base | {
+            "file_name": "leden.pdf", "billing_from": date(2025, 1, 1),
+            "billing_to": date(2025, 1, 31), "actual_consumption_mwh": 1,
+            "annual_consumption_mwh": 11.774,
+        }
+        second = base | {
+            "file_name": "unor.pdf", "billing_from": date(2025, 2, 1),
+            "billing_to": date(2025, 2, 28), "actual_consumption_mwh": 2,
+            "annual_consumption_mwh": 26.071,
+        }
+        result = merge_invoice_supply_points([first, second])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["actual_consumption_mwh"], 3)
+        self.assertEqual(result[0]["billing_from"], date(2025, 1, 1))
+        self.assertAlmostEqual(result[0]["annual_consumption_mwh"], 18.559322, places=6)
 
     def test_expired_fixed_contract_uses_future_notice_period(self):
         conn = duckdb.connect(":memory:")
