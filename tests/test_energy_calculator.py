@@ -170,6 +170,21 @@ class EnergyCalculatorTest(unittest.TestCase):
             "gas-high",
         )
 
+    def test_single_tariff_electricity_uses_vt_price_component(self):
+        quote = create_quote(
+            self.conn, None, "Jednotarif", "innogy-optimal36-ele",
+            "optimal36-ele-example", date(2026, 8, 1), "Test", "tester",
+        )
+        point = add_supply_point(
+            self.conn, quote, "Adresa", "EAN-C01D", "Elektřina", "Všechny",
+            5, 100, "Dodavatel", 3000, None, 100, "Doba neurčitá",
+            None, 3, date(2026, 8, 10), date(2026, 12, 1),
+            "innogy-optimal36-ele", "optimal36-ele-example",
+        )
+        result = calculate_supply_point(self.conn, point, 12)
+        self.assertEqual({line["component"] for line in result["lines"]}, {"VT"})
+        self.assertGreater(result["innogy_energy"], 0)
+
     def test_invoice_consumption_is_annualized_for_short_period(self):
         self.assertEqual(
             annualize_consumption(5, date(2026, 1, 1), date(2026, 6, 30)),

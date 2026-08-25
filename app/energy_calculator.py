@@ -360,11 +360,16 @@ def calculate_supply_point(conn, point_id, months=36):
     months = min(int(months), int(fixation))
     if annual < 0 or not 0 <= vt_share <= 100:
         raise EnergyCalculationError("Spotřeba ani podíl VT/NT nejsou platné.")
-    components = [("Jednotná", Decimal("1"), _as_decimal(current_vt))]
-    if commodity == "Elektřina" and current_nt is not None and vt_share < 100:
-        share = _as_decimal(vt_share) / Decimal("100")
-        components = [("VT", share, _as_decimal(current_vt)),
-                      ("NT", Decimal("1") - share, _as_decimal(current_nt))]
+    if commodity == "Elektřina":
+        # Innogy electricity lists use VT even for single-tariff rates such as
+        # C01d/C02d. "Jednotná" is reserved for gas price bands.
+        components = [("VT", Decimal("1"), _as_decimal(current_vt))]
+        if current_nt is not None and vt_share < 100:
+            share = _as_decimal(vt_share) / Decimal("100")
+            components = [("VT", share, _as_decimal(current_vt)),
+                          ("NT", Decimal("1") - share, _as_decimal(current_nt))]
+    else:
+        components = [("Jednotná", Decimal("1"), _as_decimal(current_vt))]
 
     lines = []
     innogy_energy = current_energy = Decimal("0")
