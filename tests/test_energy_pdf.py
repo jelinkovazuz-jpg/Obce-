@@ -6,10 +6,19 @@ import duckdb
 from app.energy_calculator import (
     add_supply_point, calculate_quote, create_quote, init_energy_calculator,
 )
-from app.energy_pdf import _period_label, build_energy_offer_pdf
+from app.energy_pdf import _display_periods, _period_label, build_energy_offer_pdf
 
 
 class EnergyPdfTest(unittest.TestCase):
+    def test_identical_vt_nt_periods_are_displayed_once(self):
+        periods = [
+            {"valid_from": date(2026, 12, 1), "valid_to": date(2026, 12, 31),
+             "unit_price": 2355, "monthly_fee": 127, "component": "VT"},
+            {"valid_from": date(2026, 12, 1), "valid_to": date(2026, 12, 31),
+             "unit_price": 2355, "monthly_fee": 127, "component": "NT"},
+        ]
+        self.assertEqual(len(_display_periods(periods)), 1)
+
     def test_last_price_period_has_no_end_date(self):
         period = {"valid_from": date(2028, 1, 1), "valid_to": date(2029, 12, 1)}
         self.assertEqual(_period_label(period, is_last=True), "od 1. 1. 2028")

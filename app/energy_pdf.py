@@ -46,6 +46,21 @@ def _period_label(period, is_last=False):
     return f"{_date(period['valid_from'])} - {_date(period['valid_to'])}"
 
 
+def _display_periods(periods):
+    """Collapse identical VT/NT rows so one price interval is shown once."""
+    result = []
+    seen = set()
+    for period in periods:
+        key = (
+            period["valid_from"], period["valid_to"], period["unit_price"],
+            period["monthly_fee"],
+        )
+        if key not in seen:
+            seen.add(key)
+            result.append(period)
+    return result
+
+
 def _fit(c, text, x, y, max_width, size=9, font="Offer", min_size=6):
     text = str(text or "")
     while size > min_size and c.stringWidth(text, font, size) > max_width:
@@ -177,7 +192,7 @@ def _detail_page(c, quote, item, meta):
 
     c.setFillColor(DARK); c.setFont("Offer-Bold", 14)
     c.drawString(40, height - 265, "Přehled cen innogy v čase")
-    periods = full["periods"][:6]
+    periods = _display_periods(full["periods"])[:6]
     y = height - 292
     c.setStrokeColor(PINK); c.setLineWidth(3); c.line(50, y, width - 50, y)
     for index, period in enumerate(periods):

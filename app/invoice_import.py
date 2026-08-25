@@ -81,10 +81,17 @@ def _billing_period(text):
         r"(?:období od)\s*(\d{1,2}\s*[.]\s*\d{1,2}\s*[.]\s*\d{4})\s*(?:do|–|—|-)\s*"
         r"(\d{1,2}\s*[.]\s*\d{1,2}\s*[.]\s*\d{4})",
     )
-    match = _first(labels, text, re.IGNORECASE | re.DOTALL)
-    if not match:
+    candidates = []
+    for pattern in labels:
+        for match in re.finditer(pattern, text, re.IGNORECASE | re.DOTALL):
+            start, end = _date(match.group(1)), _date(match.group(2))
+            if end >= start:
+                candidates.append((start, end))
+    if not candidates:
         raise InvoiceImportError("Na faktuře nebylo nalezeno fakturační období.")
-    return _date(match.group(1)), _date(match.group(2))
+    # Supplier invoices repeat shorter pricing subperiods later in the document.
+    # The longest labelled interval is the actual settlement period.
+    return max(candidates, key=lambda period: (period[1] - period[0]).days)
 
 
 def _identifier(text, commodity):
@@ -169,6 +176,88 @@ def _contract(text):
     if fixed:
         return "Doba určitá", _date(fixed.group(1))
     return "Doba neurčitá", None
+
+
+def _cez_details(text, commodity):
+    """Read commercial values from current ČEZ settlement invoices."""
+    section_match = re.search(
+        r"Spotřebovan(?:á elektřina|ý plyn)\s*\(obchodní část\)(.*?)"
+        r"(?:Distribuce (?:elektřiny|plynu)|Daň z (?:elektřiny|plynu) je)",
+        text, re.IGNORECASE | re.DOTALL,
+    )
+    commercial = section_match.group(1) if section_match else text
+    address_match = re.search(
+        r"Adresa:\s*(.+?)\s+(?:EAN|EIC):\s*[A-Z0-9]+", text, re.IGNORECASE,
+    )
+    fee_matches = re.findall(
+        r"Stálá platba\s+[\d .\u00a0]+,\d+\s+měs\.\s+"
+        r"([\d .\u00a0]+,\d+)\s*Kč",
+        commercial, re.IGNORECASE,
+    )
+    product_matches = re.findall(
+        r"Produkt\s+((?:Elektřina|Plyn)[^\n]+)", commercial, re.IGNORECASE,
+    )
+    if commodity == "Elektřina":
+        total_match = re.search(
+            r"Celkové dodané množství elektřiny\s+([\d .\u00a0]+,\d+)\s*kWh",
+            text, re.IGNORECASE,
+        )
+        split_match = re.search(
+            r"Celkové distribuované množství elektřiny\s+"
+            r"([\d .\u00a0]+,\d+)\s*kWh\s+([\d .\u00a0]+,\d+)\s*kWh",
+            text, re.IGNORECASE,
+        )
+        price_rows = re.findall(
+            r"Spotřeba\s*/\s*(vysoký|nízký) tarif[^\n]*?"
+            r"[\d .\u00a0]+,\d+\s*MWh\s+([\d .\u00a0]+,\d+)\s*Kč",
+            commercial, re.IGNORECASE,
+        )
+        if not total_match or not price_rows:
+            return None
+        actual = _number(total_match.group(1)) / 1000
+        prices = {"VT": [], "NT": []}
+        for tariff, price in price_rows:
+            bucket = "VT" if tariff.casefold().startswith("vysok") else "NT"
+            prices[bucket].append(_number(price))
+        vt_quantity = _number(split_match.group(1)) if split_match else actual * 1000
+        return {
+            "actual_mwh": actual,
+            "annual_mwh": None,
+            "vt_share": vt_quantity / (actual * 1000) * 100 if actual else 100.0,
+            "price_vt": prices["VT"][-1],
+            "price_nt": prices["NT"][-1] if prices["NT"] else None,
+            "monthly_fee": _number(fee_matches[-1]) if fee_matches else 0.0,
+            "monthly_fee_found": bool(fee_matches),
+            "product": product_matches[-1].strip() if product_matches else "",
+            "address": address_match.group(1).strip() if address_match else "",
+        }
+
+    total_match = re.search(
+        r"Celková spotřeba\s+([\d .\u00a0]+,\d+)\s*kWh", text, re.IGNORECASE,
+    )
+    annual_match = re.search(
+        r"Spotřeba pro určení pásma:\s*([\d .\u00a0]+,\d+)\s*kWh",
+        text, re.IGNORECASE,
+    )
+    price_rows = re.findall(
+        r"^Spotřeba\s+[\d .\u00a0]+,\d+\s*MWh\s+"
+        r"([\d .\u00a0]+,\d+)\s*Kč",
+        commercial, re.IGNORECASE | re.MULTILINE,
+    )
+    if not total_match or not price_rows:
+        return None
+    actual = _number(total_match.group(1)) / 1000
+    return {
+        "actual_mwh": actual,
+        "annual_mwh": _number(annual_match.group(1)) / 1000 if annual_match else None,
+        "vt_share": 100.0,
+        "price_vt": _number(price_rows[-1]),
+        "price_nt": None,
+        "monthly_fee": _number(fee_matches[-1]) if fee_matches else 0.0,
+        "monthly_fee_found": bool(fee_matches),
+        "product": product_matches[-1].strip() if product_matches else "",
+        "address": address_match.group(1).strip() if address_match else "",
+    }
 
 
 def _mnd_details(text, commodity):
@@ -517,7 +606,8 @@ def _parse_invoice_text(text, file_name):
         _centropol_details(text, commodity)
         if supplier == "CENTROPOL ENERGY, a.s." else None
     )
-    supplier_details = mnd or centropol
+    cez = _cez_details(text, commodity) if supplier == "ČEZ Prodej, a.s." else None
+    supplier_details = mnd or centropol or cez
     actual_mwh = (
         supplier_details["actual_mwh"]
         if supplier_details else _consumption_mwh(text, commodity)
@@ -567,9 +657,9 @@ def _parse_invoice_text(text, file_name):
         rate_band = rate_band[:-1] + "d"
     annual_mwh = annualize_consumption(
         actual_mwh, billing_from, billing_to,
-        stated_annual=mnd["annual_mwh"] if mnd else None,
+        stated_annual=supplier_details.get("annual_mwh") if supplier_details else None,
     )
-    if commodity == "Plyn" and mnd:
+    if commodity == "Plyn" and supplier_details:
         rate_band = _gas_band(annual_mwh)
     address = supplier_details["address"] if supplier_details and supplier_details["address"] else (
         address_match.group(1).strip() if address_match else ""

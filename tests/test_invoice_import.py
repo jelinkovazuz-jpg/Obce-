@@ -45,6 +45,56 @@ class FakePdf:
 
 
 class InvoiceImportTest(unittest.TestCase):
+    def test_cez_header_period_beats_shorter_pricing_subperiod(self):
+        text = """ČEZ Prodej, a.s. VYÚČTOVÁNÍ ZA ELEKTŘINU
+Vyúčtování za období Variabilní symbol Datum splatnosti Produkt Elektřina pro ZTP
+12. 3. 2025 – 4. 3. 2026 4102077600 23. 3. 2026 Distribuční sazba D25D
+ČÁST A
+ZÁKAZNÍK
+Jan Sedláček
+Adresa: U vodárny 1059, 503 46 Třebechovice pod Orebem EAN: 859182400706305275
+Celkové distribuované množství elektřiny 2 973,00 kWh 1 024,00 kWh
+Celkové dodané množství elektřiny 3 997,00 kWh
+Spotřeba / vysoký tarif (VT/T1) 2,49300 MWh 3 270,25 Kč 8 152,73 Kč
+Spotřeba / nízký tarif (NT/T2) 0,84600 MWh 3 071,90 Kč 2 598,83 Kč
+1. 1. 2026 - 4. 3. 2026 Produkt Elektřina pro ZTP
+Spotřeba / vysoký tarif (VT/T1) 0,48000 MWh 3 072,73 Kč 1 474,91 Kč
+Spotřeba / nízký tarif (NT/T2) 0,17800 MWh 2 857,85 Kč 508,70 Kč
+Stálá platba 2,12900 měs. 76,00 Kč 161,80 Kč
+INFORMACE O TRVÁNÍ SMLOUVY
+Smlouva je sjednána na dobu neurčitou.
+"""
+        result = _parse_invoice_text(text, "cez-elektrina.pdf")
+        self.assertEqual(result["billing_from"], date(2025, 3, 12))
+        self.assertEqual(result["billing_to"], date(2026, 3, 4))
+        self.assertEqual(result["annual_consumption_mwh"], 3.997)
+        self.assertAlmostEqual(result["vt_share"], 74.3808, places=4)
+        self.assertEqual(result["current_price_vt"], 3072.73)
+        self.assertEqual(result["current_price_nt"], 2857.85)
+        self.assertEqual(result["current_monthly_fee"], 76)
+
+    def test_cez_gas_invoice_uses_stated_annual_consumption(self):
+        text = """ČEZ Prodej, a.s. VYÚČTOVÁNÍ ZA PLYN
+Vyúčtování za období Variabilní symbol Datum splatnosti Produkt
+8. 9. 2023 – 20. 9. 2024 7381440900 9. 10. 2024 Plyn pro ZTP
+ČÁST A
+ZÁKAZNÍK
+Jan Sedláček
+Adresa: U vodárny 1059, 503 46 Třebechovice pod Orebem EIC: 27ZG500Z0265207P
+Celková spotřeba 20 702,47 kWh
+Spotřeba pro určení pásma: 20 586,950 kWh
+Spotřeba 11,32081 MWh 1 590,00 Kč 18 000,09 Kč
+Spotřeba 1,20250 MWh 1 279,34 Kč 1 538,41 Kč
+Stálá platba 8,66700 měs. 105,00 Kč 910,04 Kč
+INFORMACE O TRVÁNÍ SMLOUVY
+Smlouva je sjednána na dobu neurčitou.
+"""
+        result = _parse_invoice_text(text, "cez-plyn.pdf")
+        self.assertEqual(result["annual_consumption_mwh"], 20.58695)
+        self.assertEqual(result["rate_band"], "nad 7,56 do 63 MWh")
+        self.assertEqual(result["current_price_vt"], 1279.34)
+        self.assertEqual(result["current_monthly_fee"], 105)
+
     def test_cez_invoice_fields_are_extracted(self):
         fake_module = SimpleNamespace(open=lambda _: FakePdf())
         with patch.dict("sys.modules", {"pdfplumber": fake_module}):
