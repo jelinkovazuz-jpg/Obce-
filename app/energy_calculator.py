@@ -471,13 +471,37 @@ def add_supply_point(conn, quote_id, address, ean_eic, commodity, rate_band,
             notice_submitted_date,supply_start_date,product_id,price_list_id,
             source_invoice_file,billing_from,billing_to,consumption_source
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT (quote_id,ean_eic) DO UPDATE SET
+            address=excluded.address,
+            commodity=excluded.commodity,
+            rate_band=excluded.rate_band,
+            annual_consumption=excluded.annual_consumption,
+            vt_share=excluded.vt_share,
+            current_supplier=excluded.current_supplier,
+            current_price_vt=excluded.current_price_vt,
+            current_price_nt=excluded.current_price_nt,
+            current_monthly_fee=excluded.current_monthly_fee,
+            contract_type=excluded.contract_type,
+            contract_end_date=excluded.contract_end_date,
+            notice_months=excluded.notice_months,
+            notice_submitted_date=excluded.notice_submitted_date,
+            supply_start_date=excluded.supply_start_date,
+            product_id=excluded.product_id,
+            price_list_id=excluded.price_list_id,
+            source_invoice_file=excluded.source_invoice_file,
+            billing_from=excluded.billing_from,
+            billing_to=excluded.billing_to,
+            consumption_source=excluded.consumption_source
     """, [point_id, quote_id, address.strip(), ean_eic.strip(), commodity, rate_band,
            annual_consumption, vt_share, current_supplier.strip(), current_price_vt,
            current_price_nt, current_monthly_fee, contract_type, contract_end_date,
            notice_months, notice_submitted_date, supply_start_date, product_id,
            price_list_id, source_invoice_file, billing_from, billing_to,
            consumption_source])
-    return point_id
+    return conn.execute(
+        "SELECT id FROM energy_supply_points WHERE quote_id=? AND ean_eic=?",
+        [quote_id, ean_eic.strip()],
+    ).fetchone()[0]
 
 
 def save_price_period(conn, price_list_id, rate_band, component, valid_from,

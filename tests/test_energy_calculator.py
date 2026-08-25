@@ -124,6 +124,29 @@ class EnergyCalculatorTest(unittest.TestCase):
                 "Domácnost",
             )
 
+    def test_same_ean_updates_existing_supply_point(self):
+        point_id = self.add_point(consumption=12)
+        quote_id, ean = self.conn.execute(
+            "SELECT quote_id,ean_eic FROM energy_supply_points WHERE id=?", [point_id]
+        ).fetchone()
+        updated_id = add_supply_point(
+            self.conn, quote_id, "Nová adresa", ean, "Elektřina", "Všechny",
+            18, 80, "Nový dodavatel", 2800, 2200, 120,
+            "Doba neurčitá", None, 3, date(2026, 8, 10),
+            date(2026, 12, 1), "innogy-optimal36-ele", "optimal36-ele-example",
+            "novější-faktura.pdf", date(2025, 12, 1), date(2026, 11, 30),
+            "Skutečná spotřeba za 365 dní",
+        )
+        self.assertEqual(updated_id, point_id)
+        self.assertEqual(
+            self.conn.execute("""
+                SELECT count(*),annual_consumption,current_supplier,source_invoice_file
+                FROM energy_supply_points WHERE quote_id=? AND ean_eic=?
+                GROUP BY annual_consumption,current_supplier,source_invoice_file
+            """, [quote_id, ean]).fetchone(),
+            (1, 18.0, "Nový dodavatel", "novější-faktura.pdf"),
+        )
+
     def test_invoice_consumption_is_annualized_for_short_period(self):
         self.assertEqual(
             annualize_consumption(5, date(2026, 1, 1), date(2026, 6, 30)),

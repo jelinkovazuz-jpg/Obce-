@@ -290,6 +290,14 @@ def render_energy_calculator(conn, username, role):
                         "U smlouvy na dobu určitou vyplňte konec smlouvy. U smlouvy na dobu "
                         "neurčitou zkontrolujte výpovědní dobu, datum výpovědi a začátek dodávky."
                     )
+                    normalized_eans = edited_invoices["EAN / EIC"].astype(str).str.strip().str.upper()
+                    duplicate_eans = sorted(set(normalized_eans[normalized_eans.duplicated(False)]))
+                    if duplicate_eans:
+                        st.warning(
+                            f"Nalezeno {len(duplicate_eans)} opakovaných EAN/EIC. "
+                            "Pro každé odběrné místo bude použita faktura s nejnovějším "
+                            "koncem fakturačního období."
+                        )
                     confirmed = st.checkbox(
                         f"Zkontrolovala jsem údaje všech {len(edited_invoices)} odběrných míst",
                         key=f"confirm_invoice_batch_{quote_id}_{upload_nonce}",
@@ -304,7 +312,10 @@ def render_energy_calculator(conn, username, role):
                             if edited_invoices.empty:
                                 raise EnergyCalculationError("Není vybrané žádné odběrné místo.")
                             conn.execute("BEGIN TRANSACTION")
-                            for _, row in edited_invoices.iterrows():
+                            rows_to_save = edited_invoices.sort_values(
+                                "Faktura do", na_position="first"
+                            )
+                            for _, row in rows_to_save.iterrows():
                                 if not str(row["Adresa odběrného místa"]).strip() or not str(row["EAN / EIC"]).strip():
                                     raise EnergyCalculationError(
                                         f"U souboru {row['Soubor']} chybí adresa nebo EAN/EIC."
@@ -346,7 +357,12 @@ def render_energy_calculator(conn, username, role):
                                 pass
                             st.error(str(exc))
                         else:
-                            st.success(f"Uloženo {len(edited_invoices)} odběrných míst.")
+                            unique_count = normalized_eans[normalized_eans.ne("")].nunique()
+                            st.success(
+                                f"Uloženo {unique_count} unikátních odběrných míst"
+                                + (f"; {len(edited_invoices) - unique_count} duplicitních faktur aktualizovalo stejné OM."
+                                   if unique_count < len(edited_invoices) else ".")
+                            )
                             # Never mutate the state of widgets already rendered
                             # in this run. A fresh key safely clears the batch.
                             st.session_state[nonce_key] = upload_nonce + 1
