@@ -7,6 +7,7 @@ from app.energy_calculator import (
     add_supply_point,
     annualize_consumption,
     calculate_supply_point,
+    compatible_price_list,
     create_quote,
     derive_supply_start,
     EnergyCalculationError,
@@ -145,6 +146,28 @@ class EnergyCalculatorTest(unittest.TestCase):
                 GROUP BY annual_consumption,current_supplier,source_invoice_file
             """, [quote_id, ean]).fetchone(),
             (1, 18.0, "Nový dodavatel", "novější-faktura.pdf"),
+        )
+
+    def test_price_list_is_resolved_by_gas_consumption_band(self):
+        self.conn.execute("""
+            INSERT INTO energy_price_lists
+                (id,product_id,name,signing_valid_from,signing_valid_to,active)
+            VALUES ('gas-high','innogy-optimal36-gas','Akce nad 63 MWh',
+                    DATE '2026-08-01',DATE '2026-08-31',TRUE)
+        """)
+        self.conn.execute("""
+            INSERT INTO energy_price_periods
+                (id,price_list_id,rate_band,component,valid_from,valid_to,
+                 unit_price,monthly_fee)
+            VALUES ('gas-high-period','gas-high','nad 63 MWh','Jednotná',
+                    DATE '2026-08-01',NULL,819,130)
+        """)
+        self.assertEqual(
+            compatible_price_list(
+                self.conn, "innogy-optimal36-gas", date(2026, 8, 25),
+                "nad 63 MWh", "optimal36-gas-example",
+            ),
+            "gas-high",
         )
 
     def test_invoice_consumption_is_annualized_for_short_period(self):

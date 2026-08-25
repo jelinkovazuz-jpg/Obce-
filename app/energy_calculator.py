@@ -301,13 +301,49 @@ def _price_segments(conn, price_list_id, rate_band, component, start, end):
     return segments
 
 
+def compatible_price_list(conn, product_id, signing_date, rate_band, preferred_id=None):
+    """Resolve a price list that actually contains the point's rate or band."""
+    if preferred_id:
+        preferred = conn.execute("""
+            SELECT 1 FROM energy_price_lists pl
+            WHERE pl.id=? AND pl.product_id=?
+              AND EXISTS (
+                  SELECT 1 FROM energy_price_periods pp
+                  WHERE pp.price_list_id=pl.id
+                    AND pp.rate_band IN (?, 'Všechny')
+              )
+        """, [preferred_id, product_id, rate_band]).fetchone()
+        if preferred:
+            return preferred_id
+    row = conn.execute("""
+        SELECT pl.id
+        FROM energy_price_lists pl
+        WHERE pl.product_id=?
+          AND pl.signing_valid_from <= ?
+          AND coalesce(pl.signing_valid_to, DATE '9999-12-31') >= ?
+          AND EXISTS (
+              SELECT 1 FROM energy_price_periods pp
+              WHERE pp.price_list_id=pl.id
+                AND pp.rate_band IN (?, 'Všechny')
+          )
+        ORDER BY
+          EXISTS (
+              SELECT 1 FROM energy_price_periods exact_pp
+              WHERE exact_pp.price_list_id=pl.id AND exact_pp.rate_band=?
+          ) DESC,
+          pl.signing_valid_from DESC
+        LIMIT 1
+    """, [product_id, signing_date, signing_date, rate_band, rate_band]).fetchone()
+    return row[0] if row else preferred_id
+
+
 def calculate_supply_point(conn, point_id, months=36):
     row = conn.execute("""
         SELECT sp.id,sp.address,sp.ean_eic,sp.commodity,sp.rate_band,
                sp.annual_consumption,sp.vt_share,sp.current_supplier,
                sp.current_price_vt,sp.current_price_nt,sp.current_monthly_fee,
                sp.supply_start_date,coalesce(sp.price_list_id,q.price_list_id),
-               p.fixation_months
+               p.fixation_months,p.id,q.signing_date
         FROM energy_supply_points sp
         JOIN energy_quotes q ON q.id=sp.quote_id
         JOIN energy_products p ON p.id=coalesce(sp.product_id,q.product_id)
@@ -316,7 +352,11 @@ def calculate_supply_point(conn, point_id, months=36):
     if not row:
         raise EnergyCalculationError("Odběrné místo nebylo nalezeno.")
     (_, address, ean, commodity, rate, annual, vt_share, current_supplier,
-     current_vt, current_nt, current_fee, start, price_list_id, fixation) = row
+     current_vt, current_nt, current_fee, start, price_list_id, fixation,
+     product_id, signing_date) = row
+    price_list_id = compatible_price_list(
+        conn, product_id, signing_date, rate, price_list_id
+    )
     months = min(int(months), int(fixation))
     if annual < 0 or not 0 <= vt_share <= 100:
         raise EnergyCalculationError("Spotřeba ani podíl VT/NT nejsou platné.")

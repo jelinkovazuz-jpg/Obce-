@@ -11,6 +11,7 @@ from app.energy_calculator import (
     EnergyCalculationError,
     add_supply_point,
     calculate_quote,
+    compatible_price_list,
     create_quote,
     derive_supply_start,
     add_months,
@@ -64,13 +65,17 @@ def _as_date(value):
     return value.date() if hasattr(value, "date") else value
 
 
-def _default_product_price_list(conn, commodity, signing_date):
+def _default_product_price_list(conn, commodity, signing_date, rate_band=None):
     products = _product_options(conn, commodity)
     products.sort(key=lambda row: ("optimal 36" not in row[1].lower(), row[1]))
     for product_id, _label, _commodity, _months in products:
         price_lists = _price_list_options(conn, product_id, signing_date)
-        if price_lists:
-            return product_id, price_lists[0][0]
+        for price_list in price_lists:
+            compatible = compatible_price_list(
+                conn, product_id, signing_date, rate_band or "Všechny", price_list[0]
+            )
+            if compatible == price_list[0]:
+                return product_id, compatible
     raise EnergyCalculationError(
         f"Pro komoditu {commodity} a datum nabídky není dostupný akční ceník."
     )
@@ -334,7 +339,8 @@ def render_energy_calculator(conn, username, role):
                                         f"U souboru {row['Soubor']} doplňte konec smlouvy."
                                     )
                                 product_id, price_list_id = _default_product_price_list(
-                                    conn, row["Komodita"], signing_date
+                                    conn, row["Komodita"], signing_date,
+                                    row["Sazba / pásmo"],
                                 )
                                 price_nt = row["Cena NT / MWh"]
                                 add_supply_point(
