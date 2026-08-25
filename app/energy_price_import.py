@@ -3,6 +3,7 @@
 from calendar import monthrange
 from datetime import date
 from io import BytesIO
+from pathlib import Path
 import re
 from uuid import uuid4
 
@@ -24,6 +25,28 @@ class EnergyPriceImportError(EnergyCalculationError):
 
 MONEY_PATTERN = re.compile(r"\d{1,3}(?:[ \u00a0]\d{3})*,\d{2}")
 DATE_PATTERN = re.compile(r"\d{1,2}\.\s*\d{1,2}\.\s*\d{4}")
+BUNDLED_PRICE_LIST_DIR = (
+    Path(__file__).resolve().parent.parent / "data" / "default_price_lists"
+)
+
+
+def ensure_bundled_price_lists(conn, username="system", directory=None):
+    """Restore repository-bundled action PDFs after an ephemeral Cloud reboot."""
+    source_dir = Path(directory) if directory else BUNDLED_PRICE_LIST_DIR
+    imported = []
+    if not source_dir.exists():
+        return imported
+    for path in sorted(source_dir.glob("*.pdf")):
+        exists = conn.execute(
+            "SELECT 1 FROM energy_price_imports WHERE file_name=? LIMIT 1",
+            [path.name],
+        ).fetchone()
+        if exists:
+            continue
+        parsed = parse_innogy_price_pdf(path.read_bytes(), path.name)
+        import_parsed_pdf(conn, parsed, username)
+        imported.append(path.name)
+    return imported
 
 
 def template_csv():

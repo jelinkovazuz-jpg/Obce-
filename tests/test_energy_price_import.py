@@ -2,6 +2,8 @@ import unittest
 from datetime import date
 from io import BytesIO
 from types import SimpleNamespace
+from tempfile import TemporaryDirectory
+from pathlib import Path
 from unittest.mock import patch
 
 import duckdb
@@ -9,6 +11,7 @@ import duckdb
 from app.energy_calculator import init_energy_calculator
 from app.energy_price_import import (
     EnergyPriceImportError,
+    ensure_bundled_price_lists,
     import_monthly_price_list,
     parse_innogy_price_pdf,
 )
@@ -43,6 +46,38 @@ class FakePdf:
 
 
 class EnergyPriceImportTest(unittest.TestCase):
+    def test_bundled_price_list_is_restored_once(self):
+        conn = duckdb.connect(":memory:")
+        init_energy_calculator(conn)
+        parsed = {
+            "file_name": "gas.pdf", "commodity": "Plyn", "product": "Optimal 36",
+            "signing_from": date(2026, 8, 1), "signing_to": date(2026, 8, 31),
+            "rows": [{
+                "commodity": "Plyn", "product": "Optimal 36",
+                "rate": "nad 63 MWh", "component": "Jednotná",
+                "valid_from": date(2026, 8, 1), "valid_to": None,
+                "unit_price": 929.5, "monthly_fee": 130,
+            }],
+        }
+        with TemporaryDirectory() as directory:
+            Path(directory, "gas.pdf").write_bytes(b"pdf")
+            with patch(
+                "app.energy_price_import.parse_innogy_price_pdf", return_value=parsed
+            ):
+                self.assertEqual(
+                    ensure_bundled_price_lists(conn, directory=directory), ["gas.pdf"]
+                )
+                self.assertEqual(
+                    ensure_bundled_price_lists(conn, directory=directory), []
+                )
+        self.assertEqual(
+            conn.execute(
+                "SELECT count(*) FROM energy_price_imports WHERE file_name='gas.pdf'"
+            ).fetchone()[0],
+            1,
+        )
+        conn.close()
+
     def setUp(self):
         self.conn = duckdb.connect(":memory:")
         init_energy_calculator(self.conn)

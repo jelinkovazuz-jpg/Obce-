@@ -42,6 +42,7 @@ from app.email_sender import (
 )
 from app.innogy_import import InnogyImportError, import_contracts, init_innogy
 from app.energy_calculator import init_energy_calculator
+from app.energy_price_import import ensure_bundled_price_lists
 from app.energy_ui import render_energy_calculator
 
 
@@ -120,13 +121,14 @@ if not st.session_state.logged:
     st.stop()
 
 conn = connect()
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 if st.session_state.get("schema_version") != SCHEMA_VERSION:
     init_crm(conn)
     init_email_sync(conn)
     init_email_sender(conn)
     init_innogy(conn)
     init_energy_calculator(conn)
+    ensure_bundled_price_lists(conn)
     st.session_state.schema_version = SCHEMA_VERSION
 
 st.markdown(
