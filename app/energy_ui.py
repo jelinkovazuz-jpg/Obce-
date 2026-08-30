@@ -114,7 +114,10 @@ def _invoice_row(conn, extracted, signing_date):
         )
     else:
         contract_type, contract_end = "Doba neurčitá", None
-        notice_months = int(rule["notice_months"] or 0) if rule else 3
+        notice_months = (
+            int(rule["notice_months"] or 0) if rule
+            else int(extracted.get("notice_months") or 3)
+        )
         notice_date = signing_date
         supply_start = derive_supply_start(
             contract_type, signing_date, None, notice_months, notice_date
@@ -239,19 +242,19 @@ def render_energy_calculator(conn, username, role):
                 "SELECT signing_date FROM energy_quotes WHERE id=?", [quote_id]
             ).fetchone()[0]
 
-            st.markdown("### Hromadné nahrání faktur")
+            st.markdown("### Hromadné nahrání faktur nebo smluv")
             st.info(
-                "Vyberte najednou všechny faktury obce (například 20 PDF). "
-                "Každá faktura se načte jako samostatné odběrné místo a před uložením "
+                "Vyberte najednou faktury nebo smlouvy zákazníka (například 20 PDF). "
+                "Každý dokument se načte jako samostatné odběrné místo a před uložením "
                 "můžete všechny údaje upravit v tabulce."
             )
             nonce_key = f"energy_invoice_nonce_{quote_id}"
             upload_nonce = int(st.session_state.get(nonce_key, 0))
             invoice_files = st.file_uploader(
-                "Přetáhněte sem faktury současných dodavatelů",
+                "Přetáhněte sem faktury nebo smlouvy současných dodavatelů",
                 type=["pdf"], accept_multiple_files=True,
                 key=f"energy_invoices_{quote_id}_{upload_nonce}",
-                help="Lze označit více PDF současně. Jedno PDF představuje jedno odběrné místo.",
+                help="Lze označit více PDF současně. Dokument může být faktura nebo smlouva s ceníkem.",
             )
             if invoice_files:
                 parsed_invoices = []

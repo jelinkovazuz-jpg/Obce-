@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.invoice_import import (
+    _parse_energy_contract_text,
     _parse_invoice_text,
     _parse_ppas_points,
     merge_invoice_supply_points,
@@ -45,6 +46,44 @@ class FakePdf:
 
 
 class InvoiceImportTest(unittest.TestCase):
+    def test_cez_contract_with_price_sheet_is_extracted(self):
+        text = """SMLOUVA o sdružených službách dodávky elektřiny ze sítí NN
+ČEZ Prodej, a.s.
+ZÁKAZNÍK - DOMÁCNOST
+JMÉNO, PŘÍJMENÍ: Zdeněk Petrovický
+SPECIFIKACE ODBĚRNÉHO MÍSTA
+ADRESA ODBĚRNÉHO MÍSTA
+ULICE: Komenského Č.P.: 922 PSČ: 503 51
+OBEC: Chlumec nad Cidlinou MÍSTNÍ ČÁST: Chlumec nad Cidlinou IV
+EAN ODBĚRNÉHO MÍSTA: 859182400709565515 TYP MĚŘENÍ: C
+DISTRIBUČNÍ SAZBA: D02D PŘEDPOKLÁDANÁ SPOTŘEBA: 1 000 kWh/rok
+PRODUKT: Elektřina
+Smlouva se uzavírá na dobu neurčitou. Výpovědní doba je tři měsíce.
+Ceníkem produktu Elektřina na dobu neurčitou, který bude uveřejněn online.
+Distribuční sazba D01d D02d D25d D26d D27d D35d D45d D56d D57d D61d
+Obchodní část ceny
+Cena za dodávku
+1 Vysoký tarif Kč/MWh
+(3 190,08) (3 190,08) (3 272,73) (3 272,73) (3 272,73) (3 421,49) (3 421,49) (3 421,49) (3 421,49) (3 190,08)
+2 Nízký tarif Kč/MWh – –
+(3 057,85) (3 057,85) (3 016,53) (3 322,31) (3 322,31) (3 322,31) (3 322,31) (3 190,08)
+3 Stálá platba Kč/měsíc
+(135,00) (135,00) (121,00) (121,00) (121,00) (121,00) (121,00) (121,00) (121,00) (121,00)
+Distribuční část ceny
+"""
+        result = _parse_energy_contract_text(text, "smlouva.pdf")
+        self.assertEqual(result["document_type"], "Smlouva")
+        self.assertEqual(result["customer"], "Zdeněk Petrovický")
+        self.assertEqual(result["address"], "Komenského 922, 503 51 Chlumec nad Cidlinou")
+        self.assertEqual(result["ean_eic"], "859182400709565515")
+        self.assertEqual(result["rate_band"], "D02d")
+        self.assertEqual(result["annual_consumption_mwh"], 1.0)
+        self.assertEqual(result["current_price_vt"], 3190.08)
+        self.assertIsNone(result["current_price_nt"])
+        self.assertEqual(result["current_monthly_fee"], 135.0)
+        self.assertEqual(result["contract_type"], "Doba neurčitá")
+        self.assertEqual(result["notice_months"], 3)
+
     def test_cez_header_period_beats_shorter_pricing_subperiod(self):
         text = """ČEZ Prodej, a.s. VYÚČTOVÁNÍ ZA ELEKTŘINU
 Vyúčtování za období Variabilní symbol Datum splatnosti Produkt Elektřina pro ZTP

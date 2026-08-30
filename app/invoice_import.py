@@ -348,6 +348,137 @@ def _gas_band(annual_mwh):
     return "nad 63 MWh"
 
 
+def _contract_address(text):
+    section = re.search(
+        r"ADRESA ODBĚRNÉHO MÍSTA\s+(.*?)(?:EAN|EIC) ODBĚRNÉHO MÍSTA:",
+        text, re.IGNORECASE | re.DOTALL,
+    )
+    if not section:
+        return ""
+    value = section.group(1)
+    street = _first((r"ULICE:\s*(.*?)\s+Č\.P\.:\s*([^\s]+)",), value)
+    postal = _first((r"PSČ:\s*([\d ]{5,6})",), value)
+    town = _first((r"OBEC:\s*(.*?)(?:\s+MÍSTNÍ ČÁST:|\n)",), value)
+    if not (street and town):
+        return ""
+    street_text = f"{street.group(1).strip()} {street.group(2).strip()}"
+    postal_text = postal.group(1).strip() if postal else ""
+    return f"{street_text}, {postal_text} {town.group(1).strip()}".replace(",  ", ", ")
+
+
+def _cez_contract_prices(text, rate_band):
+    """Read VAT-exclusive commercial prices from a ČEZ contract price sheet."""
+    header = re.search(
+        r"Distribuční sazba\s+((?:[CD]\d{2}d\s+){2,}[CD]\d{2}d)",
+        text, re.IGNORECASE,
+    )
+    if not header:
+        return 0.0, None, 0.0
+    rates = re.findall(r"[CD]\d{2}d", header.group(1), re.IGNORECASE)
+    normalized = [rate[:-1].upper() + "d" for rate in rates]
+    rate = rate_band[:-1].upper() + "d"
+    if rate not in normalized:
+        return 0.0, None, 0.0
+    index = normalized.index(rate)
+    money = r"([\d .\u00a0]+,\d+)"
+
+    vt_section = re.search(
+        r"Cena za dodávku(.*?)2\s+Nízký tarif", text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    nt_section = re.search(
+        r"2\s+Nízký tarif(.*?)3\s+Stálá platba", text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    fee_section = re.search(
+        r"3\s+Stálá platba(.*?)Distribuční část ceny", text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    vt_values = re.findall(rf"\({money}\)", vt_section.group(1)) if vt_section else []
+    nt_values = re.findall(rf"\({money}\)", nt_section.group(1)) if nt_section else []
+    fee_values = re.findall(rf"\({money}\)", fee_section.group(1)) if fee_section else []
+    vt = _number(vt_values[index]) if index < len(vt_values) else 0.0
+    # D01d/D02d have no NT, so the NT row contains two leading dashes rather
+    # than two placeholder prices.
+    nt_index = index - max(0, len(rates) - len(nt_values))
+    nt = _number(nt_values[nt_index]) if 0 <= nt_index < len(nt_values) else None
+    fee = _number(fee_values[index]) if index < len(fee_values) else 0.0
+    return vt, nt, fee
+
+
+def _parse_energy_contract_text(text, file_name):
+    """Extract calculation inputs from an energy supply contract and its price sheet."""
+    supplier = _detect_supplier(text)
+    commodity = _detect_commodity(text)
+    customer_match = _first((
+        r"JMÉNO,\s*PŘÍJMENÍ:\s*([^\n]+)",
+        r"NÁZEV(?: ZÁKAZNÍKA)?:\s*([^\n]+)",
+    ), text)
+    identifier = _identifier(text, commodity)
+    rate_match = _first((
+        r"DISTRIBUČNÍ SAZBA:\s*([CD]\d{2}[dD])",
+        r"PÁSMO SPOTŘEBY:\s*([^\n]+)",
+    ), text)
+    rate_band = rate_match.group(1).strip() if rate_match else "Všechny"
+    if re.fullmatch(r"[CD]\d{2}[dD]", rate_band):
+        rate_band = rate_band[:-1].upper() + "d"
+    consumption_match = re.search(
+        r"PŘEDPOKLÁDANÁ SPOTŘEBA:\s*([\d .\u00a0]+(?:,\d+)?)\s*(MWh|kWh)\s*/\s*rok",
+        text, re.IGNORECASE,
+    )
+    if not consumption_match:
+        raise InvoiceImportError(
+            "Ve smlouvě nebyla nalezena roční spotřeba. Doplňte fakturu se spotřebou "
+            "nebo použijte smlouvu, která obsahuje předpokládanou spotřebu."
+        )
+    annual_mwh = _number(consumption_match.group(1))
+    if consumption_match.group(2).lower() == "kwh":
+        annual_mwh /= 1000
+
+    price_vt = price_nt = monthly_fee = 0.0
+    if supplier == "ČEZ Prodej, a.s." and commodity == "Elektřina":
+        price_vt, price_nt, monthly_fee = _cez_contract_prices(text, rate_band)
+    contract_type, contract_end = _contract(text)
+    if re.search(r"(?:uzavírá|sjednána|smlouva je uzavřena)\s+se?\s*na dobu neurčitou", text, re.IGNORECASE):
+        contract_type, contract_end = "Doba neurčitá", None
+    notice_match = re.search(
+        r"výpovědní doba je\s*(\d+|jeden|dva|tři|čtyři)\s+měsíc",
+        text, re.IGNORECASE,
+    )
+    notice_words = {"jeden": 1, "dva": 2, "tři": 3, "čtyři": 4}
+    notice_months = None
+    if notice_match:
+        raw_notice = notice_match.group(1).lower()
+        notice_months = int(raw_notice) if raw_notice.isdigit() else notice_words[raw_notice]
+    product_match = _first((
+        r"Ceníkem produktu\s+([^,\n]+)",
+        r"PRODUKT:\s*([^\n]+)",
+    ), text)
+    warnings = ["Spotřeba je předpoklad uvedený ve smlouvě, nikoli skutečná spotřeba z faktury."]
+    if not identifier:
+        warnings.append("Nepodařilo se přečíst EAN/EIC.")
+    if price_vt <= 0:
+        warnings.append("Z přiloženého ceníku se nepodařilo bezpečně určit obchodní cenu bez DPH.")
+    if monthly_fee <= 0:
+        warnings.append("Z přiloženého ceníku se nepodařilo bezpečně určit stálý obchodní plat bez DPH.")
+    return {
+        "file_name": file_name, "document_type": "Smlouva", "supplier": supplier,
+        "customer": customer_match.group(1).strip() if customer_match else "",
+        "address": _contract_address(text), "ean_eic": identifier,
+        "commodity": commodity, "rate_band": rate_band,
+        "billing_from": None, "billing_to": None,
+        "actual_consumption_mwh": round(annual_mwh, 6),
+        "annual_consumption_mwh": round(annual_mwh, 6),
+        "consumption_source": "Předpokládaná roční spotřeba uvedená ve smlouvě",
+        "vt_share": 100.0, "current_price_vt": price_vt,
+        "current_price_nt": price_nt, "current_monthly_fee": monthly_fee,
+        "contract_type": contract_type, "contract_end_date": contract_end,
+        "notice_months": notice_months, "automatic_extension": False,
+        "current_product": product_match.group(1).strip() if product_match else "",
+        "warnings": warnings,
+    }
+
+
 def _centropol_details(text, commodity):
     """Extract commercial values from current Centropol settlements."""
     total_match = re.search(
@@ -498,6 +629,11 @@ def parse_supplier_invoice_pdf_points(pdf_bytes, file_name="faktura.pdf"):
         raise InvoiceImportError(
             f"Faktura {file_name} neobsahuje čitelný text. Nahrajte původní PDF, ne naskenovaný obrázek."
         )
+    if re.search(
+        r"SMLOUVA\s+o\s+sdružených službách dodávky|SPECIFIKACE ODBĚRNÉHO MÍSTA",
+        text, re.IGNORECASE,
+    ):
+        return [_parse_energy_contract_text(text, file_name)]
     if _detect_supplier(text) == "Pražská plynárenská, a.s.":
         points = _parse_ppas_points(text, file_name)
         if points:
